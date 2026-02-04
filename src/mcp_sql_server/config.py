@@ -33,7 +33,7 @@ class PoolConfig(BaseModel):
     def from_env(cls, env_path: Path | None = None) -> "PoolConfig":
         """Load pool configuration from environment variables."""
         if env_path is None:
-            env_path = Path(__file__).parent.parent.parent.parent / ".env"
+            env_path = Path(__file__).parent.parent.parent / ".env"
 
         load_dotenv(env_path)
 
@@ -55,7 +55,7 @@ class PoolConfig(BaseModel):
             env_path: Path to .env file.
         """
         if env_path is None:
-            env_path = Path(__file__).parent.parent.parent.parent / ".env"
+            env_path = Path(__file__).parent.parent.parent / ".env"
 
         load_dotenv(env_path)
 
@@ -99,7 +99,7 @@ class DatabaseConfig(BaseModel):
         """Load configuration from .env file."""
         if env_path is None:
             # Look for .env in parent directory (repo root)
-            env_path = Path(__file__).parent.parent.parent.parent / ".env"
+            env_path = Path(__file__).parent.parent.parent / ".env"
 
         load_dotenv(env_path)
 
@@ -125,7 +125,7 @@ class DatabaseConfig(BaseModel):
             env_path: Path to .env file.
         """
         if env_path is None:
-            env_path = Path(__file__).parent.parent.parent.parent / ".env"
+            env_path = Path(__file__).parent.parent.parent / ".env"
 
         load_dotenv(env_path)
 
@@ -167,7 +167,7 @@ def get_database_names(env_path: Path | None = None) -> list[str]:
         List starting with "default", followed by any aliases from DB_DATABASES.
     """
     if env_path is None:
-        env_path = Path(__file__).parent.parent.parent.parent / ".env"
+        env_path = Path(__file__).parent.parent.parent / ".env"
     load_dotenv(env_path)
 
     names = ["default"]
@@ -231,7 +231,7 @@ def get_query_dir() -> Path:
         Path to the query directory.
     """
     # Load env if not already loaded
-    env_path = Path(__file__).parent.parent.parent.parent / ".env"
+    env_path = Path(__file__).parent.parent.parent / ".env"
     load_dotenv(env_path)
 
     query_dir_str = os.getenv("QUERY_DIR")
@@ -239,5 +239,5 @@ def get_query_dir() -> Path:
         return Path(query_dir_str).resolve()
 
     # Default: query/ directory at repository root (4 levels up from this file)
-    default_dir = Path(__file__).parent.parent.parent.parent / "query"
+    default_dir = Path(__file__).parent.parent.parent / "query"
     return default_dir.resolve()

@@ -42,11 +42,12 @@ def multi_db_env() -> Generator[None, None, None]:
         "DB_ARCHIVE_PASSWORD": "pass3",
         "DB_ARCHIVE_NAME": "db3",
     })
-    try:
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(original_env)
+    with patch("mcp_sql_server.config.load_dotenv"):
+        try:
+            yield
+        finally:
+            os.environ.clear()
+            os.environ.update(original_env)
 
 
 @pytest.fixture
@@ -63,11 +64,12 @@ def single_db_env() -> Generator[None, None, None]:
         "DB_PASSWORD": "pass1",
         "DB_NAME": "db1",
     })
-    try:
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(original_env)
+    with patch("mcp_sql_server.config.load_dotenv"):
+        try:
+            yield
+        finally:
+            os.environ.clear()
+            os.environ.update(original_env)
 
 
 class TestGetDatabaseNames:
