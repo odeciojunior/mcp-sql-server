@@ -114,14 +114,192 @@ python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
 
-### Claude Code CLI Integration
+## MCP Client Integration
 
-Register the MCP server with Claude Code:
+The server uses **stdio transport** and works with any MCP-compatible client. Below are setup instructions for the most common clients.
+
+> **Prerequisites for all clients:**
+> 1. Clone and install the project (see [Setup](#setup) above)
+> 2. Copy `.env.example` to `.env` and configure your database credentials
+> 3. Note the **absolute path** to the project's Python interpreter: `/path/to/mcp-sql-server/.venv/bin/python`
+
+### Claude Code (CLI)
+
+Register the server using `claude mcp add`. All flags go before the server name, and `--` separates the command.
+
+**Basic (reads `.env` from the project directory):**
 
 ```bash
 claude mcp add --transport stdio mcp-sql-server -- \
   /path/to/mcp-sql-server/.venv/bin/python -m mcp_sql_server.server
 ```
+
+**With inline environment variables (no `.env` file needed):**
+
+```bash
+claude mcp add --transport stdio \
+  -e DB_HOST=sqlserver.example.com \
+  -e DB_USER=myuser \
+  -e DB_PASSWORD=mypassword \
+  -e DB_NAME=MyDatabase \
+  -e DB_DRIVER="ODBC Driver 18 for SQL Server" \
+  -e DB_TRUST_CERT=true \
+  mcp-sql-server -- \
+  /path/to/mcp-sql-server/.venv/bin/python -m mcp_sql_server.server
+```
+
+**Project-scoped (shared via `.mcp.json` in your repo):**
+
+```bash
+claude mcp add --transport stdio --scope project mcp-sql-server -- \
+  /path/to/mcp-sql-server/.venv/bin/python -m mcp_sql_server.server
+```
+
+**Manage registered servers:**
+
+```bash
+claude mcp list                    # List all registered servers
+claude mcp get mcp-sql-server      # Show server details
+claude mcp remove mcp-sql-server   # Remove the server
+```
+
+### Claude Desktop
+
+Edit your `claude_desktop_config.json`:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+Open Claude Desktop → Settings → Developer → Edit Config, then add:
+
+```json
+{
+  "mcpServers": {
+    "mcp-sql-server": {
+      "command": "/path/to/mcp-sql-server/.venv/bin/python",
+      "args": ["-m", "mcp_sql_server.server"],
+      "env": {
+        "DB_HOST": "sqlserver.example.com",
+        "DB_USER": "myuser",
+        "DB_PASSWORD": "mypassword",
+        "DB_NAME": "MyDatabase",
+        "DB_DRIVER": "ODBC Driver 18 for SQL Server",
+        "DB_TRUST_CERT": "true"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop after saving. A hammer icon should appear in the input area confirming the tools are loaded.
+
+> **Note:** All `env` values must be strings. If the server's working directory differs from the project root, the `.env` file won't be found automatically -- pass all required variables via the `env` block instead.
+
+### Cursor
+
+Go to **Settings → Tools & Integrations → MCP** and add a new server, or edit the config file directly at `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "mcp-sql-server": {
+      "command": "/path/to/mcp-sql-server/.venv/bin/python",
+      "args": ["-m", "mcp_sql_server.server"],
+      "env": {
+        "DB_HOST": "sqlserver.example.com",
+        "DB_USER": "myuser",
+        "DB_PASSWORD": "mypassword",
+        "DB_NAME": "MyDatabase",
+        "DB_DRIVER": "ODBC Driver 18 for SQL Server",
+        "DB_TRUST_CERT": "true"
+      }
+    }
+  }
+}
+```
+
+### Windsurf
+
+Open **Settings → Plugins (MCP servers)** under Cascade, or edit the config file directly:
+
+- **macOS:** `~/.codeium/windsurf/mcp_config.json`
+- **Windows:** `%USERPROFILE%\.codeium\windsurf\mcp_config.json`
+
+```json
+{
+  "mcpServers": {
+    "mcp-sql-server": {
+      "command": "/path/to/mcp-sql-server/.venv/bin/python",
+      "args": ["-m", "mcp_sql_server.server"],
+      "env": {
+        "DB_HOST": "sqlserver.example.com",
+        "DB_USER": "myuser",
+        "DB_PASSWORD": "mypassword",
+        "DB_NAME": "MyDatabase",
+        "DB_DRIVER": "ODBC Driver 18 for SQL Server",
+        "DB_TRUST_CERT": "true"
+      }
+    }
+  }
+}
+```
+
+### VS Code
+
+Add to your VS Code `settings.json` (or workspace `.vscode/settings.json`):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "mcp-sql-server": {
+        "command": "/path/to/mcp-sql-server/.venv/bin/python",
+        "args": ["-m", "mcp_sql_server.server"],
+        "env": {
+          "DB_HOST": "sqlserver.example.com",
+          "DB_USER": "myuser",
+          "DB_PASSWORD": "mypassword",
+          "DB_NAME": "MyDatabase",
+          "DB_DRIVER": "ODBC Driver 18 for SQL Server",
+          "DB_TRUST_CERT": "true"
+        }
+      }
+    }
+  }
+}
+```
+
+### Generic MCP Client (JSON)
+
+Any client supporting the [MCP stdio transport](https://modelcontextprotocol.io/) can use this server. The JSON configuration pattern is the same across clients:
+
+```json
+{
+  "command": "/path/to/mcp-sql-server/.venv/bin/python",
+  "args": ["-m", "mcp_sql_server.server"],
+  "env": {
+    "DB_HOST": "sqlserver.example.com",
+    "DB_USER": "myuser",
+    "DB_PASSWORD": "mypassword",
+    "DB_NAME": "MyDatabase"
+  }
+}
+```
+
+### Environment Variables vs `.env` File
+
+There are two ways to provide database credentials to the server:
+
+| Method | Best For | How It Works |
+|--------|----------|--------------|
+| `env` block in JSON config | Claude Desktop, Cursor, Windsurf, VS Code | Client injects variables into the server process at startup |
+| `.env` file in project root | Claude Code CLI, local development | Server loads via `python-dotenv` on startup |
+
+**When using the `env` block:** The MCP client spawns the server as a subprocess and injects the variables directly. This is the most reliable method since it doesn't depend on the working directory.
+
+**When using the `.env` file:** The server reads `.env` from its working directory using `python-dotenv`. This works well with Claude Code CLI since it launches from the project directory, but may fail if the client spawns the process from a different directory.
+
+**Multi-database variables** (e.g., `DB_ANALYTICS_HOST`) work with both methods. See [Multi-Database Support](#multi-database-support) for details.
 
 ## Configuration
 
