@@ -1,6 +1,6 @@
 # Claude Code Agents
 
-This directory contains specialized Claude Code agents for the sql-playground project.
+This directory contains specialized Claude Code agents for the mcp-sql-server project.
 
 ## Agent Overview
 

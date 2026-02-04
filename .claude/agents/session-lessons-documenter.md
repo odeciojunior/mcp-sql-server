@@ -91,7 +91,7 @@ Before creating a new lesson, always check for existing coverage:
 
 **Base Path:** `docs/lessons/` (relative to project root)
 
-**Absolute Path:** `/home/odecio/projects/sql-playground/docs/lessons/`
+**Absolute Path:** `/home/odecio/projects/mcp-sql-server/docs/lessons/`
 
 **Naming Pattern:** `[YYYY-MM]/YYYY-MM-DD-NNN-slug.md`
 - Example: `2026-01/2026-01-19-018-bracket-escaping-column-aliases.md`

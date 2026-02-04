@@ -1,4 +1,4 @@
-"""SQL Playground MCP Server - Main FastMCP server implementation."""
+"""MCP SQL Server - Main FastMCP server implementation."""
 
 import logging
 import threading
@@ -55,7 +55,7 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
 
 # Initialize FastMCP server
 mcp = FastMCP(
-    "SQL Playground MCP Server",
+    "MCP SQL Server",
     dependencies=["pyodbc", "python-dotenv", "pydantic"],
     lifespan=lifespan,
 )

@@ -1,4 +1,4 @@
-# SQL Playground MCP Server
+# MCP SQL Server
 
 A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI assistants to interact with Microsoft SQL Server databases. Built with [FastMCP](https://github.com/jlowin/fastmcp), it provides tools for executing queries, exploring schemas, retrieving object definitions, and managing stored procedures -- with multi-database support, connection pooling, caching, audit logging, and security validation.
 
@@ -107,8 +107,6 @@ Cross-Cutting Concerns:
 ### Setup
 
 ```bash
-cd mcp-server
-
 # Create virtual environment
 python3 -m venv .venv
 
@@ -599,8 +597,7 @@ Mypy configuration (from `pyproject.toml`):
 ## Project Structure
 
 ```
-mcp-server/
-+-- pyproject.toml                         # Package metadata, dependencies, mypy config
+pyproject.toml                             # Package metadata, dependencies, mypy config
 +-- src/
 |   +-- mcp_sql_server/
 |       +-- __init__.py                    # Package version
@@ -643,7 +640,7 @@ mcp-server/
 
 ```bash
 # Install with dev dependencies
-cd mcp-server && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev]"
 
 # Run the MCP server (stdio transport)
 .venv/bin/python -m mcp_sql_server.server

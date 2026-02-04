@@ -124,6 +124,5 @@ The codebase uses strict type annotations validated by mypy:
 
 Run type checking:
 ```bash
-cd mcp-server
 .venv/bin/python -m mypy src/mcp_sql_server/
 ```
