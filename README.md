@@ -14,7 +14,7 @@ A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server
 - **Structured Logging** in JSON or text format with request correlation IDs
 - **Error Sanitization** that redacts IPs, credentials, and connection details from error messages
 - **Strict Type Safety** with full mypy strict mode compliance
-- **262 Tests** at 85%+ code coverage
+- **337 Tests** at 85%+ code coverage
 
 ## Architecture Overview
 
@@ -127,7 +127,7 @@ The server uses **stdio transport** and works with any MCP-compatible client. Be
 
 Register the server using `claude mcp add`. All flags go before the server name, and `--` separates the command.
 
-**Basic (reads `.env` from the project directory):**
+**Basic (requires editable install so `.env` is found relative to the package):**
 
 ```bash
 claude mcp add --transport stdio mcp-sql-server -- \
@@ -169,6 +169,7 @@ Edit your `claude_desktop_config.json`:
 
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux:** `~/.config/Claude/claude_desktop_config.json`
 
 Open Claude Desktop → Settings → Developer → Edit Config, then add:
 
@@ -281,10 +282,14 @@ Any client supporting the [MCP stdio transport](https://modelcontextprotocol.io/
     "DB_HOST": "sqlserver.example.com",
     "DB_USER": "myuser",
     "DB_PASSWORD": "mypassword",
-    "DB_NAME": "MyDatabase"
+    "DB_NAME": "MyDatabase",
+    "DB_DRIVER": "ODBC Driver 18 for SQL Server",
+    "DB_TRUST_CERT": "true"
   }
 }
 ```
+
+> **Note:** The code default for `DB_DRIVER` is `ODBC Driver 17 for SQL Server`. If you have only Driver 18 installed, you must set `DB_DRIVER` explicitly.
 
 ### Environment Variables vs `.env` File
 
@@ -297,7 +302,7 @@ There are two ways to provide database credentials to the server:
 
 **When using the `env` block:** The MCP client spawns the server as a subprocess and injects the variables directly. This is the most reliable method since it doesn't depend on the working directory.
 
-**When using the `.env` file:** The server reads `.env` from its working directory using `python-dotenv`. This works well with Claude Code CLI since it launches from the project directory, but may fail if the client spawns the process from a different directory.
+**When using the `.env` file:** The server resolves `.env` relative to the installed package location (traversing up to the repository root), which works correctly when installed in editable mode (`pip install -e .`). If the package is installed non-editably, the `.env` file won't be found -- use the `env` block instead.
 
 **Multi-database variables** (e.g., `DB_ANALYTICS_HOST`) work with both methods. See [Multi-Database Support](#multi-database-support) for details.
 
@@ -724,7 +729,7 @@ Common SQL Server errors are automatically simplified (e.g., `"Invalid object na
 
 ## Testing
 
-The test suite contains 262 tests covering all modules.
+The test suite contains 337 tests covering all modules.
 
 ```bash
 # Run all tests
