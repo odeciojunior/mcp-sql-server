@@ -92,7 +92,7 @@ All tools accept optional `database` parameter (default: `"default"`) for multi-
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Required: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`.
+Copy `.env.example` to `.env` and fill in your values. Required: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`.
 
 ### Multi-Database Support
 
@@ -103,6 +103,22 @@ DB_ANALYTICS_USER=...
 ```
 
 Each alias reads prefixed env vars (`DB_{ALIAS}_*`) and gets independent pool configuration.
+
+### Additional Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_PORT` | `1433` | SQL Server port |
+| `DB_DRIVER` | Auto-detected | ODBC driver name |
+| `DB_ENCRYPT` | - | Enable encryption |
+| `DB_TRUST_CERT` | - | Trust server certificate |
+| `DB_TIMEOUT` | `30` | Connection timeout (seconds) |
+| `DB_QUERY_TIMEOUT` | `120` | Query timeout (seconds) |
+| `DB_POOL_MIN_SIZE` | `2` | Minimum pool connections |
+| `DB_POOL_MAX_SIZE` | `10` | Maximum pool connections |
+| `QUERY_DIR` | `query/` | Directory for `execute_query_file` SQL files |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
 
 ## Security
 
@@ -129,6 +145,12 @@ Key test files:
 - `test_server.py` - Tool and resource integration tests
 - `test_pool.py` - Connection pool lifecycle, health checks
 - `test_security.py` - SQL validation, blocked keywords
+- `test_database.py` - DatabaseManager operations
+- `test_config.py` - Configuration parsing and validation
+- `test_registry.py` - Multi-database registry
+- `test_cache.py` - TTL cache behavior
+- `test_audit.py` - Audit logging and query hashing
+- `test_errors.py` - Error hierarchy and sanitization
 
 ## Type Safety
 
