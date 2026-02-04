@@ -94,6 +94,8 @@ All tools accept optional `database` parameter (default: `"default"`) for multi-
 
 Copy `.env.example` to `.env` and fill in your values. Required: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`.
 
+**Warning:** `.env` contains credentials and is gitignored. Use `.env.example` as a template.
+
 ### Multi-Database Support
 
 ```env
@@ -109,13 +111,13 @@ Each alias reads prefixed env vars (`DB_{ALIAS}_*`) and gets independent pool co
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PORT` | `1433` | SQL Server port |
-| `DB_DRIVER` | Auto-detected | ODBC driver name |
+| `DB_DRIVER` | `ODBC Driver 17 for SQL Server` | ODBC driver name |
 | `DB_ENCRYPT` | - | Enable encryption |
 | `DB_TRUST_CERT` | - | Trust server certificate |
 | `DB_TIMEOUT` | `30` | Connection timeout (seconds) |
 | `DB_QUERY_TIMEOUT` | `120` | Query timeout (seconds) |
-| `DB_POOL_MIN_SIZE` | `2` | Minimum pool connections |
-| `DB_POOL_MAX_SIZE` | `10` | Maximum pool connections |
+| `DB_POOL_MIN_SIZE` | `1` | Minimum pool connections |
+| `DB_POOL_MAX_SIZE` | `5` | Maximum pool connections |
 | `QUERY_DIR` | `query/` | Directory for `execute_query_file` SQL files |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LOG_FORMAT` | `text` | Log format (`text` or `json`) |
