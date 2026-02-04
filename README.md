@@ -121,8 +121,8 @@ python3 -m venv .venv
 Register the MCP server with Claude Code:
 
 ```bash
-claude mcp add --transport stdio sql-playground -- \
-  /path/to/sql-playground/mcp-server/.venv/bin/python -m sql_playground_mcp.server
+claude mcp add --transport stdio mcp-sql-server -- \
+  /path/to/mcp-sql-server/.venv/bin/python -m mcp_sql_server.server
 ```
 
 ## Configuration
@@ -555,7 +555,7 @@ The test suite contains 262 tests covering all modules.
 .venv/bin/pytest tests/ -v
 
 # Run with coverage report
-.venv/bin/pytest tests/ -v --cov=sql_playground_mcp --cov-report=term-missing
+.venv/bin/pytest tests/ -v --cov=mcp_sql_server --cov-report=term-missing
 
 # Run a specific test file
 .venv/bin/pytest tests/test_server.py -v
@@ -586,7 +586,7 @@ The codebase uses strict type annotations validated with mypy in strict mode.
 
 ```bash
 # Run type checker
-.venv/bin/python -m mypy src/sql_playground_mcp/
+.venv/bin/python -m mypy src/mcp_sql_server/
 ```
 
 Mypy configuration (from `pyproject.toml`):
@@ -602,7 +602,7 @@ Mypy configuration (from `pyproject.toml`):
 mcp-server/
 +-- pyproject.toml                         # Package metadata, dependencies, mypy config
 +-- src/
-|   +-- sql_playground_mcp/
+|   +-- mcp_sql_server/
 |       +-- __init__.py                    # Package version
 |       +-- server.py                      # FastMCP server, tool/resource registration
 |       +-- database.py                    # DatabaseManager with pooled/non-pooled modes
@@ -646,19 +646,19 @@ mcp-server/
 cd mcp-server && .venv/bin/pip install -e ".[dev]"
 
 # Run the MCP server (stdio transport)
-.venv/bin/python -m sql_playground_mcp.server
+.venv/bin/python -m mcp_sql_server.server
 
 # Run tests
 .venv/bin/pytest tests/ -v
 
 # Run tests with coverage
-.venv/bin/pytest tests/ -v --cov=sql_playground_mcp --cov-report=term-missing
+.venv/bin/pytest tests/ -v --cov=mcp_sql_server --cov-report=term-missing
 
 # Type check
-.venv/bin/python -m mypy src/sql_playground_mcp/
+.venv/bin/python -m mypy src/mcp_sql_server/
 
 # Run via entry point (after install)
-.venv/bin/sql-playground-mcp
+.venv/bin/mcp-sql-server
 ```
 
 ## Dependencies
@@ -680,8 +680,7 @@ cd mcp-server && .venv/bin/pip install -e ".[dev]"
 | `pytest-asyncio` | >=0.21.0 | Async test support |
 | `pytest-cov` | >=4.0.0 | Coverage reporting |
 | `mypy` | >=1.0.0 | Static type checking |
-| `types-pyodbc` | >=4.0.0 | Type stubs for pyodbc |
 
 ## License
 
-This project is part of the sql-playground workspace.
+MIT

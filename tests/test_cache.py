@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sql_playground_mcp.cache import (
+from mcp_sql_server.cache import (
     TTLCache,
     cached,
     get_metadata_cache,

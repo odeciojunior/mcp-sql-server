@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from sql_playground_mcp.config import DatabaseConfig
+from mcp_sql_server.config import DatabaseConfig
 
 
 class TestDatabaseConfigDefaults:

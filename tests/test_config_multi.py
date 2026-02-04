@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sql_playground_mcp.config import (
+from mcp_sql_server.config import (
     DatabaseConfig,
     PoolConfig,
     get_database_names,

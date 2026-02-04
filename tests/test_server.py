@@ -6,31 +6,31 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sql_playground_mcp import server
-from sql_playground_mcp.cache import invalidate_metadata_cache
-from sql_playground_mcp.server import get_db, get_registry
+from mcp_sql_server import server
+from mcp_sql_server.cache import invalidate_metadata_cache
+from mcp_sql_server.server import get_db, get_registry
 # Import tools directly from their modules for testing
-from sql_playground_mcp.tools.query_execution import (
+from mcp_sql_server.tools.query_execution import (
     execute_query,
     execute_query_file,
     execute_statement,
 )
-from sql_playground_mcp.tools.schema_discovery import describe_table, list_tables
-from sql_playground_mcp.tools.object_definitions import (
+from mcp_sql_server.tools.schema_discovery import describe_table, list_tables
+from mcp_sql_server.tools.object_definitions import (
     get_function_definition,
     get_view_definition,
 )
-from sql_playground_mcp.tools.stored_procedures import execute_procedure, list_procedures
-from sql_playground_mcp.tools.registry_tools import list_databases
-from sql_playground_mcp.resources.database_info import (
+from mcp_sql_server.tools.stored_procedures import execute_procedure, list_procedures
+from mcp_sql_server.tools.registry_tools import list_databases
+from mcp_sql_server.resources.database_info import (
     resource_database_info,
     resource_databases,
     resource_functions,
     resource_pool_stats,
     resource_tables,
 )
-from sql_playground_mcp.tools import query_execution, schema_discovery, object_definitions, stored_procedures
-from sql_playground_mcp.resources import database_info
+from mcp_sql_server.tools import query_execution, schema_discovery, object_definitions, stored_procedures
+from mcp_sql_server.resources import database_info
 
 
 @pytest.fixture(autouse=True)
@@ -996,7 +996,7 @@ class TestDatabaseParameterPassthrough:
             mock_db.execute_query.return_value = [{"id": 1}]
             mock_get_db.return_value = mock_db
 
-            with patch("sql_playground_mcp.tools.query_execution.get_query_dir") as mock_dir:
+            with patch("mcp_sql_server.tools.query_execution.get_query_dir") as mock_dir:
                 import tempfile
                 with tempfile.TemporaryDirectory() as tmp:
                     from pathlib import Path
@@ -1140,9 +1140,9 @@ class TestListDatabasesTool:
     """Tests for list_databases tool."""
 
     def test_list_databases_returns_configured(self):
-        from sql_playground_mcp.tools import registry_tools
-        from sql_playground_mcp.registry import DatabaseRegistry
-        from sql_playground_mcp.config import DatabaseConfig
+        from mcp_sql_server.tools import registry_tools
+        from mcp_sql_server.registry import DatabaseRegistry
+        from mcp_sql_server.config import DatabaseConfig
 
         config = DatabaseConfig(
             host="h1", port=1433, user="u", password="p",
@@ -1164,9 +1164,9 @@ class TestListDatabasesTool:
         assert "analytics" in names
 
     def test_list_databases_no_passwords(self):
-        from sql_playground_mcp.tools import registry_tools
-        from sql_playground_mcp.registry import DatabaseRegistry
-        from sql_playground_mcp.config import DatabaseConfig
+        from mcp_sql_server.tools import registry_tools
+        from mcp_sql_server.registry import DatabaseRegistry
+        from mcp_sql_server.config import DatabaseConfig
 
         config = DatabaseConfig(
             host="h1", port=1433, user="u", password="secret123",
@@ -1182,9 +1182,9 @@ class TestListDatabasesTool:
             assert "secret123" not in str(db)
 
     def test_list_databases_includes_host_info(self):
-        from sql_playground_mcp.tools import registry_tools
-        from sql_playground_mcp.registry import DatabaseRegistry
-        from sql_playground_mcp.config import DatabaseConfig
+        from mcp_sql_server.tools import registry_tools
+        from mcp_sql_server.registry import DatabaseRegistry
+        from mcp_sql_server.config import DatabaseConfig
 
         config = DatabaseConfig(
             host="myhost.example.com", port=1433, user="u", password="p",
@@ -1205,8 +1205,8 @@ class TestResourceDatabases:
     """Tests for sqlserver://databases resource."""
 
     def test_resource_databases_success(self):
-        from sql_playground_mcp.registry import DatabaseRegistry
-        from sql_playground_mcp.config import DatabaseConfig
+        from mcp_sql_server.registry import DatabaseRegistry
+        from mcp_sql_server.config import DatabaseConfig
 
         config = DatabaseConfig(
             host="h1", port=1433, user="u", password="p",
@@ -1228,8 +1228,8 @@ class TestResourceDatabases:
         assert "h2" in result
 
     def test_resource_databases_markdown_table(self):
-        from sql_playground_mcp.registry import DatabaseRegistry
-        from sql_playground_mcp.config import DatabaseConfig
+        from mcp_sql_server.registry import DatabaseRegistry
+        from mcp_sql_server.config import DatabaseConfig
 
         config = DatabaseConfig(
             host="h1", port=1433, user="u", password="p",

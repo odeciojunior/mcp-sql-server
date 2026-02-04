@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sql_playground_mcp.config import DatabaseConfig, PoolConfig
-from sql_playground_mcp.registry import DatabaseRegistry
+from mcp_sql_server.config import DatabaseConfig, PoolConfig
+from mcp_sql_server.registry import DatabaseRegistry
 
 
 @pytest.fixture
@@ -126,8 +126,8 @@ class TestDatabaseRegistry:
         for db in info:
             assert "password" not in db
 
-    @patch("sql_playground_mcp.registry.load_all_database_configs")
-    @patch("sql_playground_mcp.registry.load_all_pool_configs")
+    @patch("mcp_sql_server.registry.load_all_database_configs")
+    @patch("mcp_sql_server.registry.load_all_pool_configs")
     def test_from_env(self, mock_pool_configs, mock_db_configs, default_config):
         mock_db_configs.return_value = {"default": default_config}
         mock_pool_configs.return_value = {"default": PoolConfig()}

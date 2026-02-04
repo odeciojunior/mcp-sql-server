@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sql_playground_mcp.config import get_query_dir
+from mcp_sql_server.config import get_query_dir
 
 
 class TestGetQueryDir:

@@ -2,7 +2,7 @@
 
 import pytest
 
-from sql_playground_mcp.tools.query_execution import _inject_top_clause
+from mcp_sql_server.tools.query_execution import _inject_top_clause
 
 
 class TestInjectTopClause:

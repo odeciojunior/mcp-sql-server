@@ -18,10 +18,10 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest tests/ -v -k "test_execute_query"
 
 # Type check
-.venv/bin/python -m mypy src/sql_playground_mcp/
+.venv/bin/python -m mypy src/mcp_sql_server/
 
 # Run server
-.venv/bin/python -m sql_playground_mcp.server
+.venv/bin/python -m mcp_sql_server.server
 ```
 
 ## Architecture
@@ -132,4 +132,4 @@ Key test files:
 
 ## Type Safety
 
-Full mypy strict mode compliance. Run `mypy src/sql_playground_mcp/` to verify.
+Full mypy strict mode compliance. Run `mypy src/mcp_sql_server/` to verify.

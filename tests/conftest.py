@@ -119,7 +119,7 @@ def mock_pyodbc(mock_connection: MagicMock) -> Generator[MagicMock, None, None]:
 @pytest.fixture
 def sample_config() -> "DatabaseConfig":
     """Create a sample DatabaseConfig for testing."""
-    from sql_playground_mcp.config import DatabaseConfig
+    from mcp_sql_server.config import DatabaseConfig
 
     return DatabaseConfig(
         host="test-host",
@@ -138,7 +138,7 @@ def sample_config() -> "DatabaseConfig":
 @pytest.fixture
 def sample_config_with_ssl() -> "DatabaseConfig":
     """Create a DatabaseConfig with SSL enabled."""
-    from sql_playground_mcp.config import DatabaseConfig
+    from mcp_sql_server.config import DatabaseConfig
 
     return DatabaseConfig(
         host="secure-host",
@@ -157,7 +157,7 @@ def sample_config_with_ssl() -> "DatabaseConfig":
 @pytest.fixture
 def mock_db_manager(mock_pyodbc: MagicMock, sample_config: "DatabaseConfig") -> "DatabaseManager":
     """Create a DatabaseManager with mocked pyodbc."""
-    from sql_playground_mcp.database import DatabaseManager
+    from mcp_sql_server.database import DatabaseManager
 
     return DatabaseManager(sample_config)
 
@@ -165,7 +165,7 @@ def mock_db_manager(mock_pyodbc: MagicMock, sample_config: "DatabaseConfig") -> 
 @pytest.fixture
 def mock_get_db(mock_db_manager: "DatabaseManager") -> Generator[MagicMock, None, None]:
     """Patch server.get_db to return mock DatabaseManager."""
-    with patch("sql_playground_mcp.server.get_db") as mock:
+    with patch("mcp_sql_server.server.get_db") as mock:
         mock.side_effect = lambda database="default": mock_db_manager
         yield mock
 

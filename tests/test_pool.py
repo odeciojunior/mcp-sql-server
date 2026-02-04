@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import pyodbc
 
-from sql_playground_mcp.config import DatabaseConfig, PoolConfig
-from sql_playground_mcp.pool import ConnectionPool, PooledConnection
+from mcp_sql_server.config import DatabaseConfig, PoolConfig
+from mcp_sql_server.pool import ConnectionPool, PooledConnection
 
 
 @pytest.fixture

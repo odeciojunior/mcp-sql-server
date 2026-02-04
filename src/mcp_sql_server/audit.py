@@ -40,7 +40,7 @@ def _get_sql_preview(sql: str, max_length: int = 100) -> str:
 class AuditLogger:
     """Audit logger for tracking database operations."""
 
-    def __init__(self, logger_name: str = "sql_playground_mcp.audit"):
+    def __init__(self, logger_name: str = "mcp_sql_server.audit"):
         """Initialize the audit logger.
 
         Args:

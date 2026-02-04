@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 import pyodbc
 
-from sql_playground_mcp.config import DatabaseConfig
-from sql_playground_mcp.database import DatabaseManager
+from mcp_sql_server.config import DatabaseConfig
+from mcp_sql_server.database import DatabaseManager
 
 
 @pytest.fixture

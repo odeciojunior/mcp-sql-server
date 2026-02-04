@@ -2,7 +2,7 @@
 
 import pytest
 
-from sql_playground_mcp.security import (
+from mcp_sql_server.security import (
     sanitize_table_name,
     validate_identifier,
     validate_procedure_name,

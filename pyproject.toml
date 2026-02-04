@@ -1,5 +1,5 @@
 [project]
-name = "sql-playground-mcp"
+name = "mcp-sql-server"
 version = "0.1.0"
 description = "MCP server for SQL Server database interaction"
 requires-python = ">=3.10"
@@ -16,11 +16,10 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
-    "types-pyodbc>=4.0.0",
 ]
 
 [project.scripts]
-sql-playground-mcp = "sql_playground_mcp.server:main"
+mcp-sql-server = "mcp_sql_server.server:main"
 
 [build-system]
 requires = ["hatchling"]
