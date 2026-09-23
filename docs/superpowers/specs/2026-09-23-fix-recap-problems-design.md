@@ -1,34 +1,39 @@
 # Fix Recap Problems — Design
 
 **Date:** 2026-09-23
-**Status:** Approved in conversation (sections 1–4); awaiting written-spec review
+**Status:** Revision 2 — incorporates three adversarial reviews (SQL security, runtime correctness, completeness). Awaiting written-spec review.
 **Scope:** Resolve every open problem found in the 2026-09-23 codebase recap of `mcp-sql-server` (HEAD `5434c81`).
 
 ## Goal and success criteria
 
-Fix the confirmed bugs, security gaps, dead/inconsistent code, and stale docs from the recap, without changing any MCP tool name, parameter, or response shape.
+Fix the confirmed bugs, security gaps, dead/inconsistent code, and stale docs from the recap, without renaming or removing any MCP tool, parameter, or response key.
 
 Done means:
 
-- All tests pass (the existing suite plus the new tests below). `.venv/bin/pytest tests/ -q`
-- mypy strict stays clean. `.venv/bin/python -m mypy src/mcp_sql_server/`
-- Every fix has a test that fails before the change and passes after it (docs excepted).
-- `test_server_registration.py` passes unchanged — tool/resource names and schemas are identical.
+- All tests pass: `.venv/bin/pytest tests/ -q`. Existing tests are only changed where §5 lists them.
+- mypy strict stays clean: `.venv/bin/python -m mypy src/mcp_sql_server/`.
+- Every behavior change has a test that fails before the change and passes after it. Exempt: comment/docstring-only items (§2.3, §2.4, §3.5), pure deletions (§3.3), and docs (§4).
+- `test_server_registration.py` passes unchanged. (Verified by review: a `functools.wraps`-wrapped tool yields an identical schema on mcp 2.2.0.)
 
 ## Decisions taken
 
 | Question | Decision |
 |---|---|
-| Row limiting for `execute_query` | Drop SQL rewriting; `fetchmany(limit + 1)`; guard stacking with a tokenizer |
+| SQL rewriting for row limits | None. The user's SQL runs unmodified |
+| Row limiting | `SET ROWCOUNT {limit+1}` on the same cursor, then `fetchmany(limit+1)` as a second cap, then `SET ROWCOUNT 0` |
+| Statement stacking | Tokenizer + single-statement rule at parenthesis depth 0 (no reliance on `;`) |
 | Dead observability code | Delete unused exception classes, `ALL_TOOLS`/`ALL_RESOURCES`, unused logger helpers; wire `request_id` per tool call |
-| Audit SQL preview | Mask string and numeric literals as `?` |
-| Startup behavior | Validate all configs in `lifespan` (fail fast); do not connect |
+| Audit SQL preview | Mask literals; the logged hash is of the masked SQL |
+| Startup behavior | Validate each database config in `main()`, log safe errors, keep running; broken aliases fail only their own tool calls |
 
 ## Non-goals
 
-- A full SQL parser. The tokenizer only classifies tokens; it does not build a syntax tree.
-- `SQL_SERVER_*` fallback for named databases. Named aliases read only `DB_{ALIAS}_*`, as documented in `.claude/rules/sql-server-connection.md`.
-- Changing `ConnectionPool.acquire()` polling or `DatabaseRegistry.close()` error handling beyond comments/docstrings (see §2.3, §2.4 for why they are not defects).
+- A full SQL parser. The tokenizer classifies tokens and tracks parenthesis depth only.
+- The validator as the only line of defense. It is defense in depth; the README will recommend a `db_datareader`-only login for read-only use.
+- CTE-prefixed DML (`WITH c AS (...) DELETE ...`). Rejected by both tools, as today; documented.
+- `SQL_SERVER_*` fallback for named databases (documented as intentional).
+- Masking values inside driver error messages written to the audit `error` field (`sanitize_error` still redacts credentials/IPs). Documented as a known limitation.
+- Changing `ConnectionPool.acquire()` polling or `DatabaseRegistry.close()` error handling beyond comments/docstrings (§2.3, §2.4 explain why they are correct).
 
 ---
 
@@ -36,136 +41,216 @@ Done means:
 
 ### 1.1 New module: `src/mcp_sql_server/sql_lexer.py`
 
-Dependency-free, single purpose.
+Dependency-free; implemented as a character loop (no Unicode-sensitive regex classes).
 
 ```python
-class TokenKind(Enum): WORD, STRING, QUOTED_IDENT, NUMBER, SEMICOLON, OTHER
+class TokenKind(Enum):
+    WORD, STRING, QUOTED_IDENT, NUMBER, SEMICOLON, OTHER
 
 @dataclass(frozen=True)
 class Token:
     kind: TokenKind
-    text: str          # original text of the token
+    text: str      # original text
+    start: int     # offset in the input
+    end: int       # offset one past the last character
+    depth: int     # parenthesis depth at this token; "(" has the outer depth, ")" too
 
 class LexError(ValueError): ...
 
 def tokenize(sql: str) -> list[Token]: ...
 ```
 
-Rules:
+Rules, checked in this order at each position:
 
-- `WORD` — `[A-Za-z_@#][A-Za-z0-9_@#$]*`. Keyword comparisons use `text.upper()`.
-- `STRING` — `'...'` with `''` as an escaped quote; an `N` or `n` immediately before `'` is part of the string token (`N'abc'` is one `STRING`).
-- `QUOTED_IDENT` — `[...]` (with `]]` escape) and `"..."` (with `""` escape).
-- `NUMBER` — `\d+(\.\d+)?([eE][+-]?\d+)?` and `0x[0-9A-Fa-f]*`.
-- `SEMICOLON` — `;`.
-- `OTHER` — any other single non-whitespace character (operators, parentheses, commas, dots).
-- Whitespace is skipped. `-- ...` to end of line and `/* ... */` comments are skipped and produce no token. Block comments nest, as in T-SQL (`/* a /* b */ c */` is one comment).
-- An unterminated string, quoted identifier, or block comment raises `LexError` with a message naming which construct is unterminated.
+1. **Whitespace** — exactly space, `\t`, `\r`, `\n`, `\f`, `\v`; skipped. Any other character (including `\x00`, `\xa0`, `　`) is not whitespace and becomes an `OTHER` token. Mismatches with SQL Server must fail closed: an unrecognized character can only split words, never hide them.
+2. **Line comment** — `--` up to (not including) the first `\r` or `\n`, or end of input; skipped.
+3. **Block comment** — `/* ... */`, nesting (`/* a /* b */ c */` is one comment); skipped. Unterminated → `LexError("unterminated block comment")`.
+4. **String** — `'...'` with `''` as an escaped quote. `N'...'`/`n'...'` is one `STRING` only when the `N` is at the start of a token (i.e. not inside a word: `columnN'x'` is `WORD columnN` + `STRING 'x'`). Unterminated → `LexError("unterminated string")`.
+5. **Quoted identifier** — `[...]` with `]]` escape, and `"..."` with `""` escape. Unterminated → `LexError("unterminated quoted identifier")`.
+6. **Number** — `0x`/`0X` followed by hex digits first; else ASCII digits with an optional `.digits` fraction and optional `e`/`E` exponent; also `.digits`. ASCII `0-9` only.
+7. **Word** — first character is `_`, `@`, `#`, or `str.isalpha()`; following characters are `_`, `@`, `#`, `$`, ASCII digits, or `str.isalpha()`. So `Situação` and `@@VERSION` are single words.
+8. **Semicolon** — `;`.
+9. **Other** — any other single character. `(` increments depth for following tokens; `)` decrements (never below 0).
 
-### 1.2 `security.validate_query` rewrite
+Keyword comparisons use `text.upper()`; comparison sets contain ASCII words only, so non-ASCII look-alikes never match an allowed keyword (they can only cause rejection).
 
-Signature and return contract unchanged: `validate_query(sql: str, allow_modifications: bool = False) -> tuple[bool, str]`.
+### 1.2 `security.py` — validation rules
 
-Changes to constants:
+`validate_query(sql: str, allow_modifications: bool = False) -> tuple[bool, str]` keeps its signature and contract. `allow_modifications=True` is used only by `execute_statement`.
 
-- `BLOCKED_KEYWORDS` gains `EXEC`, `EXECUTE`.
-- New `READ_ONLY_FORBIDDEN: set[str] = {"INSERT", "UPDATE", "DELETE", "MERGE", "INTO"}`.
+Constants:
 
-Algorithm (checks run in this order; first failure wins):
+- `BLOCKED_KEYWORDS` — unchanged (still used by `validate_identifier`).
+- `BLOCKED_PREFIXES` — unchanged (`xp_`, `sp_`).
+- New `STATEMENT_WORDS` — words that start a separate statement; rejected anywhere, both modes:
+  `EXEC, EXECUTE, DENY, USE, DECLARE, WAITFOR, BEGIN, COMMIT, ROLLBACK, SAVE, PRINT, RAISERROR, THROW, IF, WHILE, GOTO, RETURN, OPEN, CLOSE, DEALLOCATE, CHECKPOINT, RECONFIGURE, SETUSER, REVERT, RECEIVE, SEND, WRITETEXT, UPDATETEXT, READTEXT`.
+  Deliberately excluded: `END` (needed by `CASE`), `FETCH` (needed by `OFFSET ... FETCH`), `ENABLE`/`DISABLE` (common column names; handled as pairs below). Kept separate from `BLOCKED_KEYWORDS` so `describe_table` on a table named e.g. `Print` still works.
+- New `BLOCKED_PAIRS` — consecutive `WORD` pairs rejected anywhere, both modes: `(ENABLE, TRIGGER)`, `(DISABLE, TRIGGER)`, `(NEXT, VALUE)`.
+- New `BLOCKED_FUNCTIONS` — rejected anywhere, both modes (outbound-file/SMB readers): `FN_XE_FILE_TARGET_READ_FILE, FN_TRACE_GETTABLE, FN_GET_AUDIT_FILE`. Matched on the last dotted part, so `sys.fn_trace_gettable` is caught.
+- `ALLOWED_QUERY_KEYWORDS = {SELECT, WITH}`; `ALLOWED_STATEMENT_KEYWORDS = {INSERT, UPDATE, DELETE}`. With `allow_modifications=True` the allowed first words are exactly `ALLOWED_STATEMENT_KEYWORDS` (SELECT/WITH no longer pass there; `execute_statement`'s separate first-word check is removed as redundant).
+- New `READ_ONLY_FORBIDDEN = {INSERT, UPDATE, DELETE, MERGE, INTO, SET}` — rejected anywhere in read mode.
+- New `SET_OPERATORS = {UNION, EXCEPT, INTERSECT}`.
 
-1. Empty or whitespace-only input → `"Query cannot be empty"`.
-2. `tokenize(sql)`; on `LexError` → `"Invalid SQL: <message>"`.
-3. No tokens (e.g. comment-only) → `"Query cannot be empty"`.
-4. Any `SEMICOLON` token that is not the last token → `"Multiple statements are not allowed"`. A single trailing `;` is accepted.
-5. For each `WORD` token: upper-cased text in `BLOCKED_KEYWORDS` → `"Blocked keyword detected: <KW>"`.
-6. For each `WORD` token: upper-cased text starts with `XP_` or `SP_` → `"System procedure calls not allowed: <prefix>*"` (same message format as today).
-7. First token must be a `WORD` whose upper-cased text is in the allowed set (`ALLOWED_QUERY_KEYWORDS`, plus `ALLOWED_STATEMENT_KEYWORDS` when `allow_modifications`) → otherwise `"Statement type '<X>' not allowed"`.
-8. When `allow_modifications` is false: any `WORD` token in `READ_ONLY_FORBIDDEN` → `"Data modification not allowed in read-only query: <KW>"`.
+Checks, in order; the first failure wins. "Word" means a `WORD` token; comparisons are upper-cased. `STRING`, `QUOTED_IDENT` and comments are never inspected for keywords.
 
-Consequences (each gets a test):
+1. Empty/whitespace-only input → `"Query cannot be empty"`.
+2. `tokenize`; `LexError` → `"Invalid SQL: <message>"`.
+3. No tokens → `"Query cannot be empty"`.
+4. A `SEMICOLON` that is not the last token → `"Multiple statements are not allowed"`.
+5. A word starting with `XP_` or `SP_` → `"System procedure calls not allowed: xp_*"` / `"...: sp_*"` (existing message; runs before step 6 so existing tests for `EXEC xp_cmdshell` still see `xp_`).
+6. A word in `BLOCKED_KEYWORDS` → `"Blocked keyword detected: <KW>"`.
+7. A word in `STATEMENT_WORDS` → `"Statement not allowed: <KW>"`.
+8. A pair in `BLOCKED_PAIRS` → `"Statement not allowed: <W1> <W2>"`.
+9. A word whose last dotted part is in `BLOCKED_FUNCTIONS` → `"Function not allowed: <NAME>"`.
+10. First token is not an allowed first word → `"Statement type '<X>' not allowed"`.
+11. Mode-specific single-statement rules (below).
 
-| Input | Before | After |
-|---|---|---|
-| `WITH c AS (SELECT 1 x) SELECT * FROM c` | fails at execution (wrapper) | accepted and runs |
-| `SELECT * FROM t ORDER BY id` | fails at execution (wrapper) | accepted and runs |
-| `-- note\nSELECT 1` | rejected (`--`) | accepted |
-| `SELECT * FROM t WHERE x = 'DROP'` | rejected | accepted |
-| `SELECT [Create] FROM t` | rejected | accepted |
-| `SELECT 1 /* DROP */` | rejected | accepted |
-| `SELECT 1;` | accepted | accepted |
-| `SELECT 1; SELECT 2` | wrapper syntax error | rejected: multiple statements |
-| `INSERT INTO t VALUES (1); EXEC('...')` | **accepted** | rejected |
-| `WITH c AS (SELECT 1 x) DELETE FROM t` via `execute_query` | wrapper syntax error | rejected: read-only |
-| `SELECT * INTO NewTable FROM t` via `execute_query` | wrapper syntax error | rejected: read-only |
-| `SELECT 'unterminated` | wrapper syntax error | rejected: invalid SQL |
+**Read mode (`execute_query`):**
 
-`validate_identifier`, `validate_procedure_name`, `sanitize_table_name` are unchanged. `execute_procedure` does not call `validate_query` and is unaffected by the `EXEC` block.
+- Any word in `READ_ONLY_FORBIDDEN` → `"Data modification not allowed in read-only query: <KW>"`.
+- Depth-0 `SELECT` words: the first is allowed; each later one must be immediately preceded by a set operator (`UNION`, `UNION ALL`, `EXCEPT`, `INTERSECT`), else `"Multiple statements are not allowed"`. CTE bodies are inside parentheses (depth ≥ 1) and unaffected.
+
+**Modify mode (`execute_statement`):** let `first` be the first word.
+
+- A later depth-0 `INSERT`/`UPDATE`/`DELETE`/`MERGE` → `"Multiple statements are not allowed"`.
+- `SET` words: allowed only when `first` is `UPDATE`, and only one at depth 0 → else `"Multiple statements are not allowed"`.
+- Depth-0 `SELECT` words: allowed only when `first` is `INSERT`; the first is free, later ones need a preceding set operator.
+- `INTO` words: allowed only at token index 1 when `first` is `INSERT`, or as the first `INTO` after a depth-0 `OUTPUT` word → else `"INTO not allowed here"`.
+
+Consequences (each row is a test):
+
+| Input | Tool | Before | After |
+|---|---|---|---|
+| `WITH c AS (SELECT 1 x) SELECT * FROM c` | query | fails at execution (wrapper) | runs |
+| `SELECT * FROM t ORDER BY id` | query | fails at execution | runs |
+| `SELECT a FROM t UNION ALL SELECT b FROM u` | query | runs | runs |
+| `SELECT * FROM t ORDER BY id OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY` | query | fails at execution | runs |
+| `-- note\nSELECT 1` | query | rejected (`--`) | runs |
+| `SELECT * FROM t WHERE x = 'DROP'` | query | rejected | runs |
+| `SELECT [Create], Situação FROM t` | query | rejected | runs |
+| `SELECT 1 /* DROP */` / `SELECT 1;` | query | rejected / runs | runs / runs |
+| `SELECT 1; SELECT 2` | query | wrapper error | rejected: multiple statements |
+| `SELECT 1 SELECT 2` | query | wrapper error | rejected: multiple statements |
+| `SELECT 1 WAITFOR DELAY '00:01'` | query | wrapper error | rejected: WAITFOR |
+| `SELECT 1 USE master` | query | wrapper error | rejected: USE |
+| `SELECT 1 SET ROWCOUNT 0` | query | wrapper error | rejected: SET |
+| `WITH c AS (SELECT 1 x) DELETE FROM t` | query | wrapper error | rejected: read-only |
+| `SELECT * INTO NewTable FROM t` | query | wrapper error | rejected: read-only |
+| `SELECT NEXT VALUE FOR dbo.Seq` | query | wrapper error | rejected: NEXT VALUE |
+| `SELECT * FROM sys.fn_trace_gettable('x', 1)` | query | runs | rejected: function |
+| `SELECT 'unterminated` | query | wrapper error | rejected: invalid SQL |
+| `SELECT 1 --\rDELETE FROM t` | query | wrapper error | rejected: read-only |
+| `INSERT INTO t VALUES (1); EXEC('...')` | statement | **runs** | rejected: EXEC |
+| `INSERT INTO t VALUES (1) DELETE FROM u` | statement | **runs** | rejected: multiple statements |
+| `UPDATE t SET a=1 SELECT * INTO x FROM y` | statement | **runs** | rejected |
+| `UPDATE t SET a=1 DISABLE TRIGGER trg ON t` | statement | **runs** | rejected: DISABLE TRIGGER |
+| `INSERT INTO t (a) SELECT a FROM u WHERE b = 1` | statement | runs | runs |
+| `UPDATE t SET a = (SELECT MAX(b) FROM u) WHERE id = 1` | statement | runs | runs |
+| `DELETE FROM t OUTPUT deleted.id INTO audit WHERE id = 1` | statement | runs | runs |
+| `SELECT 1` | statement | rejected (second check) | rejected (first-word) |
+
+`validate_identifier`, `validate_procedure_name`, `sanitize_table_name` are unchanged. `execute_procedure` does not call `validate_query`.
 
 ### 1.3 `tools/query_execution.py`
 
 - Delete `_inject_top_clause`.
-- `execute_query` calls `_get_db(database).execute_query(sql, params_tuple, max_rows=limit + 1)` with the original SQL. `truncated`/slicing logic stays as is.
-- `execute_statement` derives `first_word` from the first token (`tokenize(sql)[0].text.upper()`) instead of `sql.split()[0]`. Validation has already guaranteed tokenization succeeds and the first token is a `WORD`.
-- `execute_query_file` needs no change; it delegates to `execute_query`.
+- `execute_query` calls `_get_db(database).execute_query(sql, params_tuple, max_rows=limit + 1)` with the original SQL; `truncated` logic unchanged.
+- `execute_statement`: remove the redundant first-word check; derive `statement_type` for the audit log from `tokenize(sql)[0].text.upper()`.
+- `execute_query_file` unchanged (delegates to `execute_query`).
 
-### 1.4 `database.py` — `DatabaseManager.execute_query`
+### 1.4 `database.py` — row limiting and cursor cleanup
 
-New signature: `execute_query(sql, params=None, max_rows: int | None = None) -> list[dict[str, Any]]`.
+`DatabaseManager.execute_query(sql, params=None, max_rows: int | None = None)`:
 
-- `max_rows is None` → `fetchall()` (existing behavior for any other callers).
-- Otherwise → `fetchmany(max_rows)`.
-- The cursor is closed by the existing `get_cursor()` context manager, which discards remaining rows; the pooled connection is released and rolled back as today.
+```
+with self.get_cursor() as cursor:
+    if max_rows is not None:
+        cursor.execute(f"SET ROWCOUNT {int(max_rows)}")   # literal int: a parameterized
+                                                         # SET runs inside sp_executesql
+                                                         # and reverts when it returns
+    try:
+        cursor.execute(sql[, params])
+        rows = cursor.fetchmany(max_rows) if max_rows is not None else cursor.fetchall()
+    finally:
+        if max_rows is not None:
+            try:
+                cursor.cancel()                          # discard anything still pending
+                cursor.execute("SET ROWCOUNT 0")
+            except pyodbc.Error as e:
+                raise SessionStateError("could not reset SET ROWCOUNT") from e
+```
 
-### 1.5 `audit.py` — masked SQL preview
+- `SessionStateError(RuntimeError)` is defined in `database.py` (internal; never reaches tool responses unchanged — tools already turn exceptions into error dicts).
+- `PooledConnection` gains `invalid: bool = False`. `ConnectionPool.release()` closes invalid connections instead of re-queuing them.
+- `get_cursor()` (pooled): on `SessionStateError`, set `pooled_conn.invalid = True` before re-raising.
+- `get_cursor()` (both modes), exception path: close the cursor **before** `rollback()` (a pending result set makes rollback fail with "Connection is busy"); the cursor is closed exactly once.
+- `max_rows=None` keeps `fetchall()` for other callers.
 
-`_get_sql_preview(sql, max_length=100)`:
+### 1.5 `tools/stored_procedures.py` — cap procedure results
 
-- Tokenize; rebuild the preview by joining token texts with single spaces, replacing every `STRING` and `NUMBER` token with `?`.
-- Truncate to `max_length`, appending `...` when truncated (as today).
-- On `LexError` → return `"<unparseable>"`.
+`execute_procedure` reads at most 10,000 rows with `fetchmany(10_001)` and adds `"truncated": bool` to its success response (additive key; no existing key changes). `SET ROWCOUNT` is **not** used here because it would also limit DML inside the procedure.
 
-Example: `SELECT * FROM Cliente WHERE cpf = '123.456.789-00' AND id = 42` → `SELECT * FROM Cliente WHERE cpf = ? AND id = ?`.
+### 1.6 `audit.py` — masked preview and hash
 
-`_hash_sql` is unchanged (hashes the raw SQL).
+- New helper `_mask_sql(sql) -> str | None`: rebuild the SQL from tokens, replacing `STRING`, `NUMBER`, and `"`-quoted `QUOTED_IDENT` tokens with `?`. Between two tokens, emit one space if the original had any gap (whitespace or comment) and nothing otherwise, so `a.b` and `>=` stay intact and comments disappear. Returns `None` on `LexError`.
+- `_get_sql_preview(sql, max_length)`: `_mask_sql` truncated to `max_length` with `...`; `"<unparseable>"` when masking fails.
+- `_hash_sql(sql)`: SHA-256 (first 16 hex chars) of `_mask_sql(sql)`, falling back to the raw SQL only when masking fails. The log field keeps the name `sql_hash`; it now fingerprints the query shape, so equal queries with different literals share a hash and literals cannot be brute-forced from it.
 
-### 1.6 Tests
+Example: `SELECT * FROM Cliente WHERE cpf = '123.456.789-00' AND id>=42` → `SELECT * FROM Cliente WHERE cpf = ? AND id>=?`.
 
-- New `tests/test_sql_lexer.py`: each token kind; `''`, `]]`, `""` escapes; `N'...'`; line and nested block comments; unterminated string / identifier / comment raise `LexError`.
-- `tests/test_security.py`: every row of the table in §1.2, for both `allow_modifications` values where relevant; `EXEC`/`EXECUTE` blocked; `xp_`/`sp_` inside a string not blocked.
-- `tests/test_server.py`: the `execute_query` tool passes SQL unmodified and `max_rows=limit+1`; `fetchmany` used; `truncated` true when `limit+1` rows returned.
-- `tests/test_database.py`: `execute_query` with and without `max_rows`.
-- New `tests/test_audit.py`: literal masking, truncation, unparseable input.
+### 1.7 Tests for §1
+
+- New `tests/test_sql_lexer.py`: every token kind; `''`, `]]`, `""` escapes; `N'..'` at token start vs `columnN'x'`; `0xFF` vs `0`; `.5`, `1e5`; `--` ended by `\r` and by `\n`; nested block comments; `Situação` and `@@VERSION` as single words; `\xa0` as `OTHER`; depth tracking; each unterminated construct raises `LexError`.
+- `tests/test_security.py`: every row of the §1.2 table; `xp_`/`sp_` inside strings and brackets not blocked; `validate_identifier("Print")` still valid.
+- `tests/conftest.py`: `mock_cursor.fetchmany.side_effect = lambda n: rows[:n]` using the same rows as `fetchall`.
+- `tests/test_database.py`: `execute_query` with `max_rows` issues `SET ROWCOUNT n`, the SQL unchanged, `fetchmany(n)`, `cancel()`, `SET ROWCOUNT 0`, in that order; without `max_rows` none of those; a failing reset raises `SessionStateError` and the pooled connection is closed rather than re-queued; the exception path closes the cursor before rollback.
+- `tests/test_server.py`: the `execute_query` tool passes SQL unmodified with `max_rows=limit+1` and reports `truncated`; `execute_procedure` caps at 10,000 and reports `truncated`.
+- New `tests/test_audit.py`: masking, gap handling, truncation, `<unparseable>`, equal hashes for queries differing only in literals.
 - Delete `tests/test_inject_top_clause.py`.
 
 ---
 
-## 2. Connections and pool
+## 2. Connections, pool, startup
 
 ### 2.1 `DatabaseManager.connect()` with pooling → error
 
-When `use_pool=True`, `connect()` raises `RuntimeError("connect() is not supported when pooling is enabled; use get_cursor()")`. Remove the pooled branch, the `DeprecationWarning`, and `_current_pooled_conn`. Update the docstring. Non-pooled behavior is unchanged (`get_cursor()` and `execute_statement()` still call it internally in non-pooled mode).
-
-Update `tests/test_database.py` (the test asserting `DeprecationWarning`) and the comment in `tests/test_concurrency.py` that describes `connect()` as deprecated.
+With `use_pool=True`, `connect()` raises `RuntimeError("connect() is not supported when pooling is enabled; use get_cursor()")`. Remove the pooled branch, the `DeprecationWarning` (and the now-unused `import warnings`), and `_current_pooled_conn`. Non-pooled behavior unchanged.
 
 ### 2.2 Non-pooled health check rollback
 
-`DatabaseManager._is_connected()` calls `self._connection.rollback()` after `execute("SELECT 1")`, matching `ConnectionPool._is_connection_healthy`. Test: rollback is called.
+`_is_connected()` calls `rollback()` after `SELECT 1`, matching `ConnectionPool._is_connection_healthy`. Low value (only reachable in non-pooled mode, which no production path uses) but keeps the two health checks consistent.
 
 ### 2.3 `ConnectionPool.acquire()` — comment only
 
-No behavior change. Add a comment at the `queue.get(timeout=min(remaining, 0.1))` call explaining that the short timeout is required: retiring a connection on release frees a creation slot without putting anything on the queue, so a waiter blocked for the full timeout would miss the slot.
+Comment at `queue.get(timeout=min(remaining, 0.1))`: the short timeout is required because retiring a connection on release frees a creation slot without putting anything on the queue; a waiter blocked for the full timeout would miss it. (Confirmed by review against `pool.py` release/`_close_connection`.)
 
 ### 2.4 `DatabaseRegistry.close()` — docstring only
 
-No behavior change. Docstring states it is a shutdown path that closes every manager, logging per-manager failures rather than raising, so one failure cannot leave other pools open; `close_database()` raises.
+States that it is a shutdown path that closes every manager, logging per-manager failures rather than raising, so one failure cannot leave other pools open; `close_database()` raises.
 
-### 2.5 Fail-fast config validation in `lifespan`
+### 2.5 Startup validation (log and keep running)
 
-Before `yield`, `lifespan` calls `get_registry()` (which runs `DatabaseRegistry.from_env()` and loads every database and pool config; no connection is opened).
+**Safe config errors at the source (`config.py`):** integer env vars are parsed with a helper `_int_env(name, default)` that raises `ValueError(f"{name} must be an integer")`, so no error message ever contains an env value. Alias-pattern errors already contain only the alias name.
 
-On `pydantic.ValidationError` or `ValueError`: log at ERROR a message naming the failing database alias(es)/field(s) — never values — then re-raise so the server exits. Shutdown cleanup after `yield` is unchanged.
+**Per-alias tolerance (`registry.py`):** `DatabaseRegistry.from_env()` loads each alias independently. An alias whose config fails is recorded in `_config_errors: dict[str, str]` with a safe message (see below) and left out of `_configs`. `get(name)` for such an alias raises `ValueError(f"Database '{name}' is misconfigured: {message}")`; tools already return that as an error dict. `list_databases`/`get_database_info` report it with `"status": "misconfigured"`. Other aliases work normally. If `DB_DATABASES` itself is invalid, `from_env()` still raises.
 
-Tests: `lifespan` with invalid env raises and logs without leaking the password; with valid env builds the registry and `pyodbc.connect` is not called.
+**Safe message format:** for a pydantic `ValidationError`, `"; ".join(f"{'.'.join(map(str, err['loc']))}: {err['type']}" for err in e.errors(include_input=False))` — e.g. `password: string_too_short`. For other `ValueError`s, `str(e)` (safe after `_int_env`).
+
+**`main()` order:**
+
+1. `load_dotenv(<repo>/.env)` — so `LOG_LEVEL`/`LOG_FORMAT` in `.env` work.
+2. `setup_logging()`.
+3. `get_registry()`; for each entry in `_config_errors`, log at ERROR: `Database '<alias>' configuration invalid: <safe message>`. If `DB_DATABASES` is invalid, log it and continue; tool calls re-raise the same error.
+4. `mcp.run(transport="stdio")`.
+
+`lifespan` stays shutdown-only. The server always starts, so the `.claude/rules/sql-server-connection.md` setup flow keeps working.
+
+### 2.6 Tests for §2
+
+- `tests/test_database.py`: `connect()` raises in pooled mode; `_is_connected` rolls back.
+- `tests/test_config.py`: `DB_TIMEOUT=s3cr3t!` raises `ValueError` whose message names `DB_TIMEOUT` and does not contain `s3cr3t!`.
+- `tests/test_registry.py`: a misconfigured secondary alias is reported, `get()` on it raises the safe message, `default` still works; secrets absent from messages.
+- New startup test (in `tests/test_server.py`): `main()` with `mcp.run` patched calls `load_dotenv`, `setup_logging`, logs config errors without values, and still calls `mcp.run`. Uses a fixture that patches `load_dotenv`/`env_path` (no real `.env`) and resets `server._registry` afterward.
 
 ---
 
@@ -173,8 +258,8 @@ Tests: `lifespan` with invalid env raises and logs without leaking the password;
 
 ### 3.1 Logging setup
 
-- Remove `logging.basicConfig(level=logging.INFO)` from `server.py` module import.
-- `main()` calls `setup_logging()` before `mcp.run(...)`. Output stays on stderr (stdout is the MCP stdio channel).
+- Remove `logging.basicConfig(level=logging.INFO)` from `server.py`. Note: `MCPServer.__init__` calls the SDK's own `configure_logging` (→ `basicConfig`), which today is a no-op because our call runs first; after removal the SDK installs a stderr handler at import, and `setup_logging()` in `main()` replaces it. Output stays on stderr.
+- `main()` runs `setup_logging()` per §2.5.
 
 ### 3.2 Per-call `request_id`
 
@@ -192,60 +277,78 @@ def with_request_id(func: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 ```
 
-- Applied beneath each `@mcp.tool()` in `server.py` (10 tools). Not applied to resources.
-- `functools.wraps` keeps the signature visible to the SDK; `test_server_registration.py` guards schemas.
-- SDK 2.x runs sync handlers via `anyio.to_thread.run_sync`, which runs each call in a copied context, so concurrent calls keep distinct IDs.
-- `request_id` appears only in JSON log output (existing `StructuredFormatter` behavior).
+- Applied directly beneath `@mcp.tool()` on each of the 10 tools (`@mcp.tool()` outermost). Not applied to resources.
+- Verified by review: schemas unchanged; mypy strict accepts it; SDK 2.x runs sync tools via `anyio.to_thread.run_sync` in a copied context, and 8 concurrent calls observed 8 distinct IDs.
+- The ID appears only in JSON log output (existing `StructuredFormatter` behavior); text format unchanged.
 
 ### 3.3 Dead code removal
 
-- `errors.py`: delete `MCPError`, `ValidationError`, `ConnectionError`, `QueryError`, `TimeoutError`. Keep `sanitize_error`, `simplify_error`, `create_error_response`.
-- `tools/__init__.py`: delete `ALL_TOOLS` and its `__all__` entry. `resources/__init__.py`: delete `ALL_RESOURCES` and its `__all__` entry.
-- `logging_config.py`: delete `get_logger`, `LoggerAdapter`, `get_logger_with_context`, `set_request_id`, `clear_request_id` (no callers in `src/` or `tests/`; `with_request_id` uses `request_id_var` directly).
+- `errors.py`: delete `MCPError`, `ValidationError`, `ConnectionError`, `QueryError`, `TimeoutError`. Keep `sanitize_error`, `simplify_error`, `create_error_response`. (`pool.py` raises the builtin `TimeoutError`; unaffected.)
+- `tools/__init__.py` / `resources/__init__.py`: delete `ALL_TOOLS` / `ALL_RESOURCES` and their `__all__` entries.
+- `logging_config.py`: delete `get_logger`, `LoggerAdapter`, `get_logger_with_context`, `set_request_id`, `clear_request_id`.
+
+Verified by review: no references in `src/`, `tests/`, or `.claude/`; README mentions are handled in §4.
 
 ### 3.4 Cache key construction
 
-In `cache.cached`:
-
-- Prefix: `key_prefix or f"{func.__module__}.{func.__qualname__}"`.
-- Key: `f"{prefix}|{args!r}|{sorted(kwargs.items())!r}"`.
-
-Key remains `str`; `TTLCache` is unchanged. Test: `f("a", "b")` and `f("a:b")` yield different keys; two same-named functions in different modules do not collide.
+In `cache.cached`, key = `f"{key_prefix or func.__name__}|{args!r}|{sorted(kwargs.items())!r}"`. (No default-prefix change: every caller passes `key_prefix`.) Cached functions receive only `str`/`None`, so `repr` is deterministic. Test: `("a", "b")` and `("a:b",)` produce different keys.
 
 ### 3.5 Kept as-is
 
-The comment at `server.py` above `MCPServer(...)` (positional-arg trap) stays; it explains why only `name` is positional.
+The comment above `MCPServer(...)` about the positional-argument trap stays; it is accurate.
 
-### 3.6 Tests
+### 3.6 Tests for §3
 
-- New `tests/test_logging_config.py`: JSON and text formatters; `setup_logging` honors `LOG_LEVEL`/`LOG_FORMAT` and writes to stderr; `with_request_id` sets an ID during the call and restores it after (including on exception); wrapped function keeps its signature.
-- `tests/test_concurrency.py`: concurrent wrapped calls observe distinct `request_id` values.
-- `tests/test_cache.py`: key collision cases above.
+- New `tests/test_logging_config.py`, with a fixture that saves and restores the root logger's handlers and level: JSON and text formatters; `setup_logging` honors `LOG_LEVEL`/`LOG_FORMAT` and writes to stderr; `with_request_id` sets an ID during the call, restores it afterward (also on exception), and preserves the signature.
+- `tests/test_server.py`: importing `server` does not call `logging.basicConfig` from our code; `main()` calls `setup_logging` (covered by §2.6's startup test).
+- `tests/test_concurrency.py`: concurrent wrapped calls see distinct `request_id` values; update the docstring that calls `connect()` deprecated.
+- `tests/test_cache.py`: key collision case.
+- New `tests/test_utils.py`: `get_db`/`get_registry` lazy import and caching (raises `utils.py` from 38%).
 
 ---
 
 ## 4. Docs and hygiene
 
-Each doc change lands in the same commit as the code change it describes.
+Doc edits land with the code they describe; a final grep (last step) verifies every referenced module, test file, and keyword exists.
 
-- **Test counts:** replace hardcoded counts in `README.md` (lines ~17 and ~732) and `CLAUDE.md` with count-free wording; keep the "85%+ coverage" claim.
-- **Test file lists:** `CLAUDE.md` — remove `test_errors.py` (does not exist); keep `test_audit.py` (created in §1.6); add `test_config_multi.py`, `test_query_dir.py`, `test_sql_lexer.py`, `test_logging_config.py`. `README.md` table and tree — remove `test_inject_top_clause.py`; add `test_server_registration.py`, `test_concurrency.py`, `test_sql_lexer.py`, `test_logging_config.py`, `test_audit.py`.
-- **`SQL_SERVER_*`:** README gains a configuration subsection describing both sources and precedence (process `DB_*` > `SQL_SERVER_*` > `.env` `DB_*`; named aliases only `DB_{ALIAS}_*`). `.env.example` gains a commented `SQL_SERVER_*` block.
-- **Changed behavior:** README "Security" and CLAUDE.md "Blocked SQL Keywords"/"Statement Type Enforcement" reflect §1.2; README error-hierarchy section replaced with the error-dict format; README logging section covers `LOG_FORMAT=json`, `request_id`, masked preview; `.claude/rules/mcp-tools.md` describes `fetchmany`-based limiting; README and CLAUDE.md architecture add `sql_lexer.py`.
-- **`.claude/agents/README.md`:** the lessons knowledge base section points to the `sql-playground` repository (`docs/lessons/`, where `INDEX.md` lives) instead of a nonexistent local path.
+- **Test counts:** replace hardcoded counts (README ~17 and ~732; CLAUDE.md ~144) with count-free wording; keep "85%+ coverage".
+- **Test file lists:** CLAUDE.md — remove `test_errors.py`; keep `test_audit.py` (created in §1.7); add `test_config_multi.py`, `test_query_dir.py`, `test_sql_lexer.py`, `test_logging_config.py`, `test_utils.py`. README table and tree — remove `test_inject_top_clause.py`; add `test_server_registration.py`, `test_concurrency.py`, `test_sql_lexer.py`, `test_logging_config.py`, `test_audit.py`, `test_utils.py`.
+- **`SQL_SERVER_*`:** README configuration subsection on both sources and precedence (process `DB_*` > `SQL_SERVER_*` > `.env` `DB_*`; named aliases only `DB_{ALIAS}_*`). `.env.example` gains a commented `SQL_SERVER_*` block.
+- **Changed behavior, all locations:**
+  - README Security section and CLAUDE.md "Blocked SQL Keywords"/"Statement Type Enforcement": §1.2 rules, the recommendation of a read-only login, CTE-DML unsupported.
+  - README ~440 (TOP wrapper) and `.claude/rules/mcp-tools.md`: `SET ROWCOUNT` + `fetchmany` limiting; `execute_procedure` 10,000-row cap and `truncated`.
+  - README ~93 (errors.py row) and ~712–716 (exception hierarchy): replace with the error-dict format.
+  - README ~691 (preview) and logging section: masked preview, `sql_hash` as query-shape fingerprint, `LOG_FORMAT=json` with `request_id`, `.env` logging vars honored; known limitation on driver error text.
+  - README ~799, ~806 (tree comments `ALL_TOOLS`/`ALL_RESOURCES`): remove.
+  - README and CLAUDE.md: startup validation behavior (server starts; misconfigured aliases reported).
+  - README and CLAUDE.md architecture: add `sql_lexer.py`.
+- **Lessons path:** `.claude/agents/README.md`, `.claude/agents/lesson-retriever.md`, `.claude/agents/session-lessons-documenter.md` point to the `sql-playground` repository's `docs/lessons/` (where `INDEX.md` exists) instead of a local path.
 - **Merged branch:** `git branch -d feat/mcp-2x-migration` as the final step, after asking the user.
-- **Verification:** grep docs for every referenced module, test file, and keyword to confirm each exists.
 
 Already resolved before this spec: `.coverage` untracked and ignored (`5434c81`).
 
-## Suggested implementation order
+---
+
+## 5. Existing tests that change
+
+| Test | Change |
+|---|---|
+| `test_database.py::test_connect_emits_deprecation_warning_when_pooled` | Now asserts `RuntimeError` |
+| `test_database.py::TestDatabaseManagerIsConnected::test_is_connected_true_when_valid` | Construct with `use_pool=False` |
+| `test_database.py::TestDatabaseManagerIsConnected::test_is_connected_false_on_pyodbc_error` | Construct with `use_pool=False` |
+| `test_security.py` cases asserting SELECT passes `allow_modifications=True` (if any) | Update: SELECT/WITH no longer allowed in modify mode |
+| `test_inject_top_clause.py` | Deleted |
+| `test_server.py` cases asserting `SELECT TOP` in executed SQL (if any) | Assert SQL unmodified and `max_rows` |
+
+## 6. Implementation order
 
 1. `sql_lexer.py` + tests.
-2. `validate_query` rewrite + security tests.
-3. `max_rows` / `fetchmany`, remove TOP wrapper, `execute_statement` first-token (must land together with step 2 so stacking is never unguarded).
-4. Audit preview masking.
-5. Pool/connection fixes (§2.1–2.4).
-6. Fail-fast `lifespan` (§2.5).
-7. Logging setup + `with_request_id` (§3.1–3.2).
-8. Dead code + cache keys (§3.3–3.4).
-9. Docs sweep + verification grep; delete merged branch.
+2. `validate_query` rules + security tests.
+3. Row limiting (`SET ROWCOUNT`, `fetchmany`, `SessionStateError`, cursor close order), remove the TOP wrapper, `execute_statement` cleanup. **Steps 2 and 3 land together** so stacking is never unguarded.
+4. `execute_procedure` cap.
+5. Audit masking and hash.
+6. `connect()`, `_is_connected`, comments/docstrings (§2.1–2.4).
+7. `_int_env`, per-alias registry tolerance, `main()` startup order (§2.5) + logging setup (§3.1).
+8. `with_request_id` (§3.2).
+9. Dead code, cache key, `test_utils.py` (§3.3–3.4, §3.6).
+10. Final doc grep; delete merged branch (ask first).
