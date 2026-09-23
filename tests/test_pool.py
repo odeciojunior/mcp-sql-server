@@ -590,7 +590,19 @@ class TestCreationFailure:
             pool = ConnectionPool(db_config, cfg)
             held = pool.acquire()
             mock_connect.side_effect = pyodbc.Error("login failed")
+            calls_before = mock_connect.call_count
             with pytest.raises(TimeoutError):
                 pool.acquire()
+            assert mock_connect.call_count - calls_before == 1
             pool.release(held)
+            pool.close()
+
+    def test_pool_creation_failure_log_is_sanitized(self, db_config, caplog):
+        """F4: a login failure logged during pre-create must not leak the username."""
+        cfg = PoolConfig(min_size=1, max_size=1, acquire_timeout=0.5)
+        with patch("pyodbc.connect") as mock_connect:
+            mock_connect.side_effect = pyodbc.Error("Login failed for user 'bob'")
+            with caplog.at_level("WARNING"):
+                pool = ConnectionPool(db_config, cfg)
+            assert "bob" not in caplog.text
             pool.close()

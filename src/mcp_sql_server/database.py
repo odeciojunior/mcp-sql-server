@@ -7,6 +7,7 @@ from typing import Any, Generator
 import pyodbc
 
 from .config import DatabaseConfig, PoolConfig
+from .errors import sanitize_error
 from .pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ class DatabaseManager:
                         except Exception:
                             logger.debug("Rollback failed during error handling")
                     if isinstance(e, pyodbc.Error):
-                        logger.error(f"Database error: {e}")
+                        logger.error(f"Database error: {sanitize_error(e)}")
                     raise
                 finally:
                     if not closed:
@@ -138,7 +139,7 @@ class DatabaseManager:
                     except Exception:
                         logger.debug("Rollback failed during error handling")
                 if isinstance(e, pyodbc.Error):
-                    logger.error(f"Database error: {e}")
+                    logger.error(f"Database error: {sanitize_error(e)}")
                 raise
             finally:
                 if not closed:
@@ -250,7 +251,7 @@ class DatabaseManager:
                     except Exception:
                         logger.debug("Rollback failed during error handling")
                     if isinstance(e, pyodbc.Error):
-                        logger.error(f"Database error: {e}")
+                        logger.error(f"Database error: {sanitize_error(e)}")
                     raise
                 finally:
                     cursor.close()
@@ -271,7 +272,7 @@ class DatabaseManager:
                 except Exception:
                     logger.debug("Rollback failed during error handling")
                 if isinstance(e, pyodbc.Error):
-                    logger.error(f"Database error: {e}")
+                    logger.error(f"Database error: {sanitize_error(e)}")
                 raise
             finally:
                 cursor.close()

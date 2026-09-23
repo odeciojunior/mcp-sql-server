@@ -11,6 +11,7 @@ from typing import Any, Generator
 import pyodbc
 
 from .config import DatabaseConfig, PoolConfig
+from .errors import sanitize_error
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class ConnectionPool:
                 conn = self._create_connection()
                 self._pool.put_nowait(conn)
             except Exception as e:
-                logger.warning(f"Failed to pre-create connection: {e}")
+                logger.warning(f"Failed to pre-create connection: {sanitize_error(e)}")
 
     def _create_connection(self) -> PooledConnection:
         """Create a new database connection."""
@@ -171,6 +172,11 @@ class ConnectionPool:
             raise RuntimeError("Pool is closed")
 
         deadline = time.time() + self._pool_config.acquire_timeout
+        # Once a creation attempt fails in this call, never try again: with
+        # other connections checked out, queue.Empty would otherwise send us
+        # straight back to can_create and pyodbc.connect every ~100ms until
+        # the deadline (a login storm on a bad password/unreachable host).
+        creation_failed = False
 
         while True:
             remaining = deadline - time.time()
@@ -216,14 +222,15 @@ class ConnectionPool:
                 with self._lock:
                     can_create = self._created_count < self._pool_config.max_size
 
-                if can_create:
+                if can_create and not creation_failed:
                     try:
                         pooled_conn = self._create_connection()
                         pooled_conn.mark_used()
                         self._track_acquisition()
                         return pooled_conn
                     except Exception as e:
-                        logger.warning(f"Failed to create new connection: {e}")
+                        logger.warning(f"Failed to create new connection: {sanitize_error(e)}")
+                        creation_failed = True
                         with self._lock:
                             self._failed_acquisitions += 1
                             nothing_to_wait_for = self._created_count == 0
@@ -232,7 +239,8 @@ class ConnectionPool:
                             # us; retrying would repeat the failing login
                             # every poll until the timeout.
                             raise
-                        # Others are checked out: wait for one to come back.
+                        # Others are checked out: wait for one to come back,
+                        # but never attempt another creation in this call.
                         continue
 
     def release(self, pooled_conn: PooledConnection) -> None:

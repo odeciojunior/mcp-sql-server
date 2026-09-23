@@ -173,6 +173,16 @@ class TestDatabaseManagerGetCursor:
             with db.get_cursor() as cursor:
                 cursor.execute("SELECT 1")
 
+    def test_get_cursor_error_log_is_sanitized(self, mock_pyodbc, mock_cursor, sample_config, caplog):
+        """F4: the "Database error" log must not leak a raw driver message."""
+        db = DatabaseManager(sample_config, use_pool=False)
+        mock_cursor.execute.side_effect = pyodbc.Error("Login failed for user 'bob'")
+        with caplog.at_level("ERROR"):
+            with pytest.raises(pyodbc.Error):
+                with db.get_cursor() as cursor:
+                    cursor.execute("SELECT 1")
+        assert "bob" not in caplog.text
+
     def test_get_cursor_connects_if_needed(self, mock_pyodbc, sample_config):
         db = DatabaseManager(sample_config, use_pool=False)
         assert db._connection is None
