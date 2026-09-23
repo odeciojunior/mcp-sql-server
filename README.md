@@ -438,7 +438,7 @@ Execute a read-only SELECT query against the database.
 | `limit` | `int` | `1000` | Max rows to return (1--10,000) |
 | `database` | `str` | `"default"` | Target database alias |
 
-The query is automatically wrapped with `SELECT TOP (limit+1) * FROM (query) AS _limited_query` to enforce server-side limiting. If more than `limit` rows exist, `truncated` is set to `True`.
+The SQL runs unmodified (CTEs, `ORDER BY`, and `UNION` all work). Rows are capped on the server with `SET ROWCOUNT (limit+1)` and read with `fetchmany`; the session is reset afterwards and any connection whose state cannot be restored is retired. If more than `limit` rows exist, `truncated` is set to `True`.
 
 **Response:**
 ```json
@@ -571,6 +571,8 @@ Execute a stored procedure with optional named parameters.
 | `database` | `str` | `"default"` | Target database alias |
 
 System procedures (`xp_*`, `sp_*`) are blocked. Parameter names are validated as safe identifiers.
+
+At most 10,000 rows are returned; the response includes `"truncated": true` when more rows existed. Only the first result set is read.
 
 **Example:**
 ```python

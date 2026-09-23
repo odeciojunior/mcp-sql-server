@@ -1250,3 +1250,60 @@ class TestResourceDatabases:
             result = resource_databases()
 
             assert "Error" in result
+
+
+class TestRowLimitWiring:
+    def test_execute_query_passes_sql_unmodified(self, mock_query_results):
+        with patch.object(query_execution, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = mock_query_results
+            mock_get_db.return_value = mock_db
+
+            sql = "WITH c AS (SELECT 1 x) SELECT * FROM c ORDER BY x"
+            result = execute_query(sql, limit=50)
+
+            assert result["success"] is True
+            args, kwargs = mock_db.execute_query.call_args
+            assert args[0] == sql
+            assert kwargs == {"max_rows": 51, "server_limit": True}
+
+    def test_execute_query_reports_truncation(self):
+        rows = [{"id": i} for i in range(51)]
+        with patch.object(query_execution, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = rows
+            mock_get_db.return_value = mock_db
+
+            result = execute_query("SELECT id FROM t", limit=50)
+
+            assert result["truncated"] is True
+            assert result["row_count"] == 50
+
+    def test_execute_procedure_caps_rows(self):
+        from mcp_sql_server.tools import stored_procedures
+
+        rows = [{"id": i} for i in range(stored_procedures.MAX_PROCEDURE_ROWS + 1)]
+        with patch.object(stored_procedures, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = rows
+            mock_get_db.return_value = mock_db
+
+            result = execute_procedure("GetAll")
+
+            assert result["success"] is True
+            assert result["truncated"] is True
+            assert result["row_count"] == stored_procedures.MAX_PROCEDURE_ROWS
+            _, kwargs = mock_db.execute_query.call_args
+            assert kwargs == {"max_rows": stored_procedures.MAX_PROCEDURE_ROWS + 1}
+
+    def test_execute_procedure_not_truncated(self, mock_procedure_results):
+        from mcp_sql_server.tools import stored_procedures
+
+        with patch.object(stored_procedures, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = mock_procedure_results
+            mock_get_db.return_value = mock_db
+
+            result = execute_procedure("GetUserById", params={"UserId": 1})
+
+            assert result["truncated"] is False

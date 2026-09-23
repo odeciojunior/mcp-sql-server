@@ -69,8 +69,11 @@ execute_procedure(
 | Setting | Default | Maximum | Source |
 |---------|---------|---------|--------|
 | Query result rows | 1,000 | 10,000 | `execute_query` limit param |
+| Procedure result rows | 10,000 | 10,000 | `execute_procedure` (reports `truncated`) |
 | Query timeout | 120s | - | `config.py` QUERY_TIMEOUT |
 | Connection timeout | 30s | - | `config.py` TIMEOUT |
+
+`execute_query` runs SQL unmodified and caps rows server-side with `SET ROWCOUNT (limit+1)`, then `fetchmany`. CTEs and `ORDER BY` work.
 
 ## Connection Pooling
 

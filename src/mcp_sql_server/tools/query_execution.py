@@ -15,25 +15,6 @@ from ..utils import get_db as _get_db
 logger = logging.getLogger(__name__)
 
 
-def _inject_top_clause(sql: str, limit: int) -> str:
-    """Inject TOP clause into SELECT statement for server-side limiting.
-
-    Wraps the original query in a subquery with TOP to limit results at the
-    database level, avoiding fetching all rows then truncating client-side.
-
-    Args:
-        sql: The original SQL query
-        limit: Maximum number of rows to return
-
-    Returns:
-        Modified SQL with TOP clause applied
-    """
-    # Fetch limit + 1 to detect if truncation occurred
-    fetch_limit = limit + 1
-    # Wrap query in a subquery with TOP to limit at database level
-    return f"SELECT TOP {fetch_limit} * FROM ({sql}) AS _limited_query"
-
-
 def execute_query(
     sql: str,
     params: list[str] | None = None,
@@ -60,13 +41,14 @@ def execute_query(
     # Clamp limit to reasonable bounds
     limit = max(1, min(limit, 10000))
 
-    # Inject TOP clause to limit results at database level
-    limited_sql = _inject_top_clause(sql, limit)
-
     with timed_operation() as timing:
         try:
             params_tuple = tuple(params) if params else None
-            results = _get_db(database).execute_query(limited_sql, params_tuple)
+            # Fetch limit + 1 so truncation can be detected. The SQL runs
+            # unmodified; the manager caps rows with SET ROWCOUNT.
+            results = _get_db(database).execute_query(
+                sql, params_tuple, max_rows=limit + 1, server_limit=True
+            )
 
             # Check if we got more than limit (meaning truncation occurred)
             truncated = len(results) > limit
