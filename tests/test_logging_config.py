@@ -60,6 +60,20 @@ class TestSetupLogging:
         setup_logging(level="INFO", log_format="text")
         assert len(root.handlers) == 1
 
+    def test_lowercase_level_normalizes(self):
+        setup_logging(level="debug", log_format="text")
+        assert logging.getLogger().level == logging.DEBUG
+
+    def test_unknown_level_falls_back_to_info(self):
+        setup_logging(level="nonsense", log_format="text")
+        assert logging.getLogger().level == logging.INFO
+
+    def test_uppercase_format_normalizes_to_json(self, capsys):
+        setup_logging(level="INFO", log_format="JSON")
+        logging.getLogger("t").info("hello")
+        record = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+        assert record["message"] == "hello"
+
 
 class TestRequestId:
     def test_id_set_during_call_and_cleared_after(self):

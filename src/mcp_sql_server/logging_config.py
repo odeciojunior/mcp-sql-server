@@ -91,12 +91,18 @@ def setup_logging(
         level: Log level (DEBUG, INFO, WARNING, ERROR). Defaults to LOG_LEVEL env var or INFO.
         log_format: Output format ('json' or 'text'). Defaults to LOG_FORMAT env var or 'text'.
     """
-    # Get configuration from environment or defaults
-    level = level or os.getenv("LOG_LEVEL", "INFO").upper()
-    log_format = log_format or os.getenv("LOG_FORMAT", "text").lower()
+    # Get configuration from environment or defaults, normalized so a
+    # lowercase/mixed-case value (e.g. LOG_LEVEL=debug) doesn't crash
+    # setLevel or silently fall back to text formatting.
+    level = (level or os.getenv("LOG_LEVEL") or "INFO").upper()
+    log_format = (log_format or os.getenv("LOG_FORMAT") or "text").lower()
 
-    # Convert level string to logging constant
-    numeric_level = getattr(logging, level, logging.INFO)
+    # Convert level string to logging constant; fall back to INFO if it
+    # isn't a valid level name (getattr would otherwise resolve arbitrary
+    # attribute names, e.g. a helper function, that aren't int levels).
+    numeric_level = getattr(logging, level, None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
 
     # Create root logger configuration
     root_logger = logging.getLogger()
