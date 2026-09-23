@@ -178,8 +178,11 @@ def execute_query_file(
         return {"error": f"Query file not found: {filename}", "success": False}
 
     try:
-        sql = query_file.read_text(encoding="utf-8")
+        # utf-8-sig strips a UTF-8 BOM if present (and is a no-op otherwise),
+        # so a query file saved with a BOM by some editors doesn't get a
+        # stray U+FEFF glued onto its first token.
+        sql = query_file.read_text(encoding="utf-8-sig")
         return execute_query(sql, database=database)
     except Exception as e:
-        logger.error(f"Error reading query file: {e}")
-        return {"error": str(e), "success": False}
+        logger.error(f"Error reading query file: {sanitize_error(e)}")
+        return {"error": sanitize_error(e), "success": False}

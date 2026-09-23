@@ -347,6 +347,29 @@ class TestExecuteQueryFileTool:
         assert result["success"] is False
         assert "not found" in result["error"]
 
+    def test_execute_query_file_strips_utf8_bom(self):
+        """F9: a .sql file saved with a UTF-8 BOM must execute cleanly, no
+        stray U+FEFF glued onto the SQL passed to the database layer."""
+        with patch.object(query_execution, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = [{"id": 1}]
+            mock_get_db.return_value = mock_db
+
+            with patch("mcp_sql_server.tools.query_execution.get_query_dir") as mock_dir:
+                import tempfile
+                with tempfile.TemporaryDirectory() as tmp:
+                    from pathlib import Path
+                    qdir = Path(tmp)
+                    (qdir / "bom.sql").write_bytes(b"\xef\xbb\xbfSELECT 1")
+                    mock_dir.return_value = qdir
+
+                    result = execute_query_file("bom.sql")
+
+            assert result["success"] is True
+            sql_arg = mock_db.execute_query.call_args[0][0]
+            assert not sql_arg.startswith("﻿")
+            assert sql_arg == "SELECT 1"
+
 
 class TestListTablesTool:
     """Tests for list_tables tool."""
