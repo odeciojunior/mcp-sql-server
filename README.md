@@ -703,12 +703,12 @@ Schema metadata queries (`list_tables`, `describe_table`, `list_procedures`) are
 
 The `AuditLogger` tracks all database operations:
 
-- **Queries:** SQL hash, preview (first 100 chars), duration, row count, truncation status, target database
-- **Statements:** SQL hash, statement type (INSERT/UPDATE/DELETE), duration, affected rows, target database
+- **Queries:** SQL hash, masked preview (first 100 chars), duration, row count, truncation status, target database
+- **Statements:** SQL hash, masked preview, statement type (INSERT/UPDATE/DELETE), duration, affected rows, target database
 - **Procedures:** Procedure name, schema, duration, row count, target database
-- **Validation Failures:** SQL hash, short preview, blocked keyword, target database
+- **Validation Failures:** SQL hash, short masked preview, error, target database
 
-SQL content is hashed with SHA-256 (first 16 chars) for privacy-preserving audit trails.
+Previews replace every string and numeric literal with `?` and drop comments (`WHERE cpf = '123'` → `WHERE cpf = ?`). `sql_hash` is the first 16 hex chars of the SHA-256 of the masked SQL: a query-shape fingerprint, so queries that differ only in literal values share a hash and the values cannot be recovered from it.
 
 ### Structured Logging
 
