@@ -1,12 +1,17 @@
 """Structured logging configuration for MCP server."""
 
+import functools
 import json
 import logging
 import os
 import sys
+import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, MutableMapping
+from typing import Any, Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 # Context variable for request tracking
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
@@ -45,9 +50,35 @@ class StandardFormatter(logging.Formatter):
 
     def __init__(self) -> None:
         super().__init__(
-            fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            fmt="%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
+
+
+class RequestIdFilter(logging.Filter):
+    """Attach the current request ID (or "-") to every record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get() or "-"
+        return True
+
+
+def with_request_id(func: Callable[P, R]) -> Callable[P, R]:
+    """Run func with a fresh request ID so its log lines can be correlated.
+
+    Apply directly beneath @mcp.tool(). functools.wraps keeps the signature
+    the MCP SDK reads to build the tool schema.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        token = request_id_var.set(uuid.uuid4().hex[:12])
+        try:
+            return func(*args, **kwargs)
+        finally:
+            request_id_var.reset(token)
+
+    return wrapper
 
 
 def setup_logging(
@@ -78,6 +109,7 @@ def setup_logging(
     # Create console handler
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(numeric_level)
+    console_handler.addFilter(RequestIdFilter())
 
     # Set formatter based on format preference
     if log_format == "json":
@@ -90,56 +122,3 @@ def setup_logging(
     # Set levels for noisy third-party loggers
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("pyodbc").setLevel(logging.WARNING)
-
-
-def get_logger(name: str) -> logging.Logger:
-    """Get a logger with the specified name.
-
-    Args:
-        name: Logger name (typically __name__)
-
-    Returns:
-        Configured logger instance
-    """
-    return logging.getLogger(name)
-
-
-class LoggerAdapter(logging.LoggerAdapter[logging.Logger]):
-    """Logger adapter that adds extra fields to log records."""
-
-    def process(
-        self, msg: str, kwargs: MutableMapping[str, Any]
-    ) -> tuple[str, MutableMapping[str, Any]]:
-        """Add extra fields to the log record."""
-        extra = kwargs.get("extra", {})
-        extra["extra_fields"] = self.extra
-        kwargs["extra"] = extra
-        return msg, kwargs
-
-
-def get_logger_with_context(name: str, **context: Any) -> LoggerAdapter:
-    """Get a logger adapter with additional context.
-
-    Args:
-        name: Logger name
-        **context: Additional context fields to include in all log messages
-
-    Returns:
-        LoggerAdapter with context
-    """
-    logger = logging.getLogger(name)
-    return LoggerAdapter(logger, context)
-
-
-def set_request_id(request_id: str) -> None:
-    """Set the current request ID for correlation.
-
-    Args:
-        request_id: Unique identifier for the request
-    """
-    request_id_var.set(request_id)
-
-
-def clear_request_id() -> None:
-    """Clear the current request ID."""
-    request_id_var.set(None)
