@@ -101,13 +101,16 @@ def _scan_number(sql: str, pos: int) -> int:
         while i < n and sql[i] in _ASCII_DIGITS:
             i += 1
     if i < n and sql[i] in "eE":
-        j = i + 1
-        if j < n and sql[j] in "+-":
-            j += 1
-        if j < n and sql[j] in _ASCII_DIGITS:
-            i = j
-            while i < n and sql[i] in _ASCII_DIGITS:
-                i += 1
+        # T-SQL always reads e/E here as the start of an exponent, even with
+        # no digits following (e.g. "1e" is a float literal, not "1" then a
+        # word "e..."). Consuming it unconditionally keeps a following
+        # keyword from being glued onto it (fail closed: "1eEXEC" must not
+        # split into NUMBER "1" + WORD "eEXEC").
+        i += 1
+        if i < n and sql[i] in "+-":
+            i += 1
+        while i < n and sql[i] in _ASCII_DIGITS:
+            i += 1
     return i
 
 

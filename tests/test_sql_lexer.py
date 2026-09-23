@@ -98,7 +98,10 @@ class TestNumbers:
         assert kinds("0xDEAD") == [(N, "0xDEAD")]
 
     def test_trailing_e_without_digits(self):
-        assert kinds("1.5e") == [(N, "1.5"), (W, "e")]
+        assert kinds("1.5e") == [(N, "1.5e")]
+
+    def test_exponent_glued_keyword_splits_after_e(self):
+        assert kinds("1eEXEC") == [(N, "1e"), (W, "EXEC")]
 
     def test_non_ascii_digits_are_not_numbers(self):
         assert tokenize("١٢٣")[0].kind is not TokenKind.NUMBER

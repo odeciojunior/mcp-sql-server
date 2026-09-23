@@ -258,6 +258,10 @@ READ_REJECTED = [
     ("SELECT 1 ADD SIGNATURE TO p BY CERTIFICATE c", "ADD"),
     ("-- only a comment", "empty"),
     ("(SELECT 1)", "Statement type"),
+    ("SELECT 1eEXEC('select 1')", "EXEC"),
+    ("SELECT 1eDELETE FROM t", "DELETE"),
+    ("SELECT 1.eWAITFOR DELAY '00:00:05'", "WAITFOR"),
+    ("SELECT .5eUSE master", "USE"),
 ]
 
 STATEMENT_ACCEPTED = [
