@@ -548,3 +548,22 @@ class TestPoolConfig:
             assert config.min_size == 2
             assert config.max_size == 10
             assert config.idle_timeout == 600
+
+
+class TestInvalidConnections:
+    def test_invalid_connection_is_closed_on_release(self, db_config, pool_config):
+        with patch("pyodbc.connect") as mock_connect:
+            mock_conn = MagicMock()
+            mock_connect.return_value = mock_conn
+
+            pool = ConnectionPool(db_config, pool_config)
+            pooled_conn = pool.acquire()
+            pooled_conn.invalid = True
+            pool.release(pooled_conn)
+
+            assert pool.available == 0
+            mock_conn.close.assert_called()
+            pool.close()
+
+    def test_new_connection_is_valid(self):
+        assert PooledConnection(connection=MagicMock()).invalid is False

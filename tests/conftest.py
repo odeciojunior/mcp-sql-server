@@ -72,11 +72,15 @@ def mock_cursor() -> MagicMock:
         ("name", str, None, None, None, None, None),
         ("value", float, None, None, None, None, None),
     ]
-    cursor.fetchall.return_value = [
+    rows = [
         (1, "test1", 10.5),
         (2, "test2", 20.5),
         (3, "test3", 30.5),
     ]
+    cursor.fetchall.return_value = rows
+    cursor.fetchmany.side_effect = lambda n: rows[:n]
+    # Matches sample_config.database for the post-query DB_NAME() check.
+    cursor.fetchone.return_value = ("test-db",)
     cursor.rowcount = 3
     cursor.execute = MagicMock()
     cursor.close = MagicMock()

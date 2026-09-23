@@ -13,6 +13,14 @@ from .pool import ConnectionPool
 logger = logging.getLogger(__name__)
 
 
+class SessionStateError(RuntimeError):
+    """A connection's session state could not be restored after a query.
+
+    The connection must not be reused: pooled connections are retired and a
+    non-pooled connection is closed.
+    """
+
+
 class DatabaseManager:
     """Manages database connections with optional pooling support."""
 
@@ -117,15 +125,22 @@ class DatabaseManager:
         """Context manager for cursor with automatic cleanup.
 
         When pooling is enabled, acquires a connection from the pool and
-        releases it after the cursor is closed.
+        releases it after the cursor is closed. On error the cursor is closed
+        before rolling back: a pending result set would make rollback fail
+        with "Connection is busy with results for another command".
         """
         if self._use_pool:
             pool = self._get_pool()
             with pool.connection() as pooled_conn:
                 cursor = pooled_conn.connection.cursor()
+                closed = False
                 try:
                     yield cursor
                 except Exception as e:
+                    if isinstance(e, SessionStateError):
+                        pooled_conn.invalid = True
+                    self._close_cursor(cursor)
+                    closed = True
                     try:
                         pooled_conn.connection.rollback()
                     except Exception:
@@ -134,36 +149,103 @@ class DatabaseManager:
                         logger.error(f"Database error: {e}")
                     raise
                 finally:
-                    cursor.close()
+                    if not closed:
+                        cursor.close()
         else:
             conn = self.connect()
             cursor = conn.cursor()
+            closed = False
             try:
                 yield cursor
             except Exception as e:
-                try:
-                    conn.rollback()
-                except Exception:
-                    logger.debug("Rollback failed during error handling")
+                self._close_cursor(cursor)
+                closed = True
+                if isinstance(e, SessionStateError):
+                    self._drop_connection()
+                else:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        logger.debug("Rollback failed during error handling")
                 if isinstance(e, pyodbc.Error):
                     logger.error(f"Database error: {e}")
                 raise
             finally:
-                cursor.close()
+                if not closed:
+                    cursor.close()
 
-    def execute_query(self, sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
-        """Execute a query and return results as list of dicts."""
+    @staticmethod
+    def _close_cursor(cursor: pyodbc.Cursor) -> None:
+        try:
+            cursor.close()
+        except Exception:
+            logger.debug("Cursor close failed during error handling")
+
+    def _drop_connection(self) -> None:
+        """Close and forget the non-pooled connection."""
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except Exception:
+                logger.debug("Connection close failed")
+            self._connection = None
+
+    def execute_query(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | None = None,
+        max_rows: int | None = None,
+        server_limit: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Execute a query and return results as list of dicts.
+
+        Args:
+            sql: SQL to execute, unmodified.
+            params: Positional parameters for ``?`` placeholders.
+            max_rows: Read at most this many rows (``fetchmany``).
+            server_limit: Also cap rows on the server with ``SET ROWCOUNT``.
+                Requires ``max_rows``. Do not use for stored procedures:
+                ROWCOUNT would also limit DML inside them.
+
+        Raises:
+            SessionStateError: the session could not be reset afterwards; the
+                connection is retired.
+        """
+        if server_limit and max_rows is None:
+            raise ValueError("server_limit requires max_rows")
+
         with self.get_cursor() as cursor:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
+            if server_limit:
+                # Literal int, not a parameter: a parameterized SET runs inside
+                # sp_executesql and reverts when that call returns.
+                cursor.execute(f"SET ROWCOUNT {int(max_rows or 0)}")
+            try:
+                if params:
+                    cursor.execute(sql, params)
+                else:
+                    cursor.execute(sql)
 
-            if cursor.description is None:
-                return []
+                if cursor.description is None:
+                    return []
 
-            columns = [col[0] for col in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                columns = [col[0] for col in cursor.description]
+                rows = cursor.fetchmany(max_rows) if max_rows is not None else cursor.fetchall()
+                return [dict(zip(columns, row)) for row in rows]
+            finally:
+                if server_limit:
+                    self._reset_session(cursor)
+
+    def _reset_session(self, cursor: pyodbc.Cursor) -> None:
+        """Undo SET ROWCOUNT and confirm the session is still on our database."""
+        try:
+            cursor.cancel()
+            cursor.execute("SET ROWCOUNT 0")
+            cursor.execute("SELECT DB_NAME()")
+            row = cursor.fetchone()
+        except pyodbc.Error as e:
+            raise SessionStateError("could not reset session state") from e
+        if row is None or row[0] != self.config.database:
+            raise SessionStateError("session database changed")
 
     def execute_statement(self, sql: str, params: tuple[Any, ...] | None = None) -> int:
         """Execute a modification statement and return affected row count."""

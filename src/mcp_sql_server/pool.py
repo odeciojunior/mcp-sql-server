@@ -24,6 +24,8 @@ class PooledConnection:
     last_used_at: float = field(default_factory=time.time)
     last_health_check: float = field(default_factory=time.time)
     use_count: int = 0
+    # Set when session state could not be restored; release() closes it.
+    invalid: bool = False
 
     def is_stale(self, max_lifetime: int) -> bool:
         """Check if connection has exceeded its maximum lifetime."""
@@ -234,6 +236,10 @@ class ConnectionPool:
             self._in_use = max(0, self._in_use - 1)
 
         if self._closed:
+            self._close_connection(pooled_conn)
+            return
+
+        if pooled_conn.invalid:
             self._close_connection(pooled_conn)
             return
 

@@ -389,3 +389,101 @@ class TestDatabaseManagerPoolStats:
         assert "total_acquisitions" in stats
         assert "total_releases" in stats
         db.close()
+
+
+from mcp_sql_server.database import SessionStateError  # noqa: E402
+
+
+class TestExecuteQueryRowLimit:
+    def test_fetchall_without_max_rows(self, mock_pyodbc, mock_cursor, sample_config):
+        db = DatabaseManager(sample_config, use_pool=False)
+        rows = db.execute_query("SELECT * FROM t")
+        assert len(rows) == 3
+        mock_cursor.fetchmany.assert_not_called()
+        executed = [c.args for c in mock_cursor.execute.call_args_list]
+        assert executed == [("SELECT * FROM t",)]
+
+    def test_max_rows_uses_fetchmany_only(self, mock_pyodbc, mock_cursor, sample_config):
+        db = DatabaseManager(sample_config, use_pool=False)
+        rows = db.execute_query("EXEC [dbo].[p]", max_rows=2)
+        assert len(rows) == 2
+        mock_cursor.fetchmany.assert_called_once_with(2)
+        executed = [c.args for c in mock_cursor.execute.call_args_list]
+        assert executed == [("EXEC [dbo].[p]",)]
+
+    def test_server_limit_sequence(self, mock_pyodbc, mock_cursor, sample_config):
+        db = DatabaseManager(sample_config, use_pool=False)
+        rows = db.execute_query("SELECT * FROM t WHERE a = ?", ("x",), max_rows=2, server_limit=True)
+        assert len(rows) == 2
+        executed = [c.args for c in mock_cursor.execute.call_args_list]
+        assert executed == [
+            ("SET ROWCOUNT 2",),
+            ("SELECT * FROM t WHERE a = ?", ("x",)),
+            ("SET ROWCOUNT 0",),
+            ("SELECT DB_NAME()",),
+        ]
+        mock_cursor.cancel.assert_called_once()
+
+    def test_server_limit_requires_max_rows(self, mock_pyodbc, sample_config):
+        db = DatabaseManager(sample_config, use_pool=False)
+        with pytest.raises(ValueError, match="max_rows"):
+            db.execute_query("SELECT 1", server_limit=True)
+
+    def test_reset_runs_even_when_query_fails(self, mock_pyodbc, mock_cursor, sample_config):
+        def execute(sql, *args):
+            if sql == "SELECT bad":
+                raise pyodbc.Error("boom")
+        mock_cursor.execute.side_effect = execute
+        db = DatabaseManager(sample_config, use_pool=False)
+        with pytest.raises(pyodbc.Error):
+            db.execute_query("SELECT bad", max_rows=5, server_limit=True)
+        executed = [c.args[0] for c in mock_cursor.execute.call_args_list]
+        assert executed[-2:] == ["SET ROWCOUNT 0", "SELECT DB_NAME()"]
+
+    def test_failed_reset_raises_session_state_error(self, mock_pyodbc, mock_cursor, sample_config):
+        def execute(sql, *args):
+            if sql == "SET ROWCOUNT 0":
+                raise pyodbc.Error("busy")
+        mock_cursor.execute.side_effect = execute
+        db = DatabaseManager(sample_config, use_pool=False)
+        with pytest.raises(SessionStateError):
+            db.execute_query("SELECT 1", max_rows=5, server_limit=True)
+
+    def test_changed_database_raises_session_state_error(self, mock_pyodbc, mock_cursor, sample_config):
+        mock_cursor.fetchone.return_value = ("master",)
+        db = DatabaseManager(sample_config, use_pool=False)
+        with pytest.raises(SessionStateError, match="database changed"):
+            db.execute_query("SELECT 1", max_rows=5, server_limit=True)
+
+    def test_non_pooled_session_error_drops_connection(self, mock_pyodbc, mock_cursor, mock_connection, sample_config):
+        mock_cursor.fetchone.return_value = ("master",)
+        db = DatabaseManager(sample_config, use_pool=False)
+        with pytest.raises(SessionStateError):
+            db.execute_query("SELECT 1", max_rows=5, server_limit=True)
+        assert db._connection is None
+        mock_connection.close.assert_called()
+
+    def test_pooled_session_error_retires_connection(self, mock_pyodbc, mock_cursor, mock_connection, sample_config):
+        mock_cursor.fetchone.return_value = ("master",)
+        db = DatabaseManager(sample_config)
+        with pytest.raises(SessionStateError):
+            db.execute_query("SELECT 1", max_rows=5, server_limit=True)
+        assert db._get_pool().available == 0
+        mock_connection.close.assert_called()
+        db.close()
+
+
+class TestGetCursorErrorOrdering:
+    def test_cursor_closed_before_rollback(self, mock_pyodbc, mock_cursor, mock_connection, sample_config):
+        order = MagicMock()
+        order.attach_mock(mock_cursor.close, "close")
+        order.attach_mock(mock_connection.rollback, "rollback")
+        db = DatabaseManager(sample_config)
+        with pytest.raises(RuntimeError):
+            with db.get_cursor():
+                order.reset_mock()  # ignore any calls made while acquiring
+                raise RuntimeError("fail")
+        names = [c[0] for c in order.mock_calls]
+        assert names.index("close") < names.index("rollback")
+        assert names.count("close") == 1
+        db.close()
