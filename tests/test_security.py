@@ -244,6 +244,8 @@ READ_REJECTED = [
     ("SELECT * INTO NewTable FROM t", "INTO"),
     ("SELECT NEXT VALUE FOR dbo.Seq", "NEXT VALUE"),
     ("SELECT * FROM sys.fn_trace_gettable('x', 1)", "FN_TRACE_GETTABLE"),
+    ("SELECT * FROM sys.[fn_trace_gettable]('x', 1)", "FN_TRACE_GETTABLE"),
+    ('SELECT * FROM "fn_get_audit_file"(\'x\', NULL, NULL)', "FN_GET_AUDIT_FILE"),
     ("SELECT 'unterminated", "Invalid SQL"),
     ("SELECT 1 --\rDELETE FROM t", "DELETE"),
     ("SELECT 1 DECLARE @p int", "DECLARE"),

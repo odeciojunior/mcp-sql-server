@@ -73,6 +73,18 @@ _DML_WORDS: set[str] = {"INSERT", "UPDATE", "DELETE", "MERGE"}
 _MULTIPLE = "Multiple statements are not allowed"
 
 
+def _unquote_identifier(tok: Token) -> str:
+    """Strip outer [..]/".." delimiters from a QUOTED_IDENT token and
+    un-escape doubled delimiters (]] -> ], "" -> "), uppercased."""
+    text = tok.text
+    inner = text[1:-1]
+    if text[0] == "[":
+        inner = inner.replace("]]", "]")
+    else:
+        inner = inner.replace('""', '"')
+    return inner.upper()
+
+
 def _follows_set_operator(tokens: list[Token], idx: int) -> bool:
     """True if tokens[idx] is preceded by UNION/EXCEPT/INTERSECT (optionally + ALL)."""
     j = idx - 1
@@ -191,6 +203,12 @@ def validate_query(sql: str, allow_modifications: bool = False) -> tuple[bool, s
     for tok in words:
         if tok.upper in BLOCKED_FUNCTIONS:
             return False, f"Function not allowed: {tok.upper}"
+
+    for tok in tokens:
+        if tok.kind is TokenKind.QUOTED_IDENT:
+            name = _unquote_identifier(tok)
+            if name in BLOCKED_FUNCTIONS:
+                return False, f"Function not allowed: {name}"
 
     first = tokens[0]
     allowed = ALLOWED_STATEMENT_KEYWORDS if allow_modifications else ALLOWED_QUERY_KEYWORDS
