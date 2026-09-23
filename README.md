@@ -74,7 +74,7 @@ Cross-Cutting Concerns:
   security.py ......... SQL validation, keyword blocking, identifier checks
   cache.py ............ TTL cache with @cached decorator
   audit.py ............ Query hashing, execution timing, audit events
-  errors.py ........... Exception hierarchy, error sanitization
+  errors.py ........... Error sanitization and error responses
   logging_config.py ... Structured JSON/text logging, request correlation
 ```
 
@@ -91,7 +91,7 @@ Cross-Cutting Concerns:
 | `sql_lexer.py` | Dependency-free T-SQL tokenizer (words, strings, quoted identifiers, numbers, paren depth) used by validation and audit masking |
 | `cache.py` | `TTLCache` class with thread-safe get/set, `@cached` decorator, global metadata cache |
 | `audit.py` | `AuditLogger` for queries/statements/procedures, SQL hashing, `timed_operation()` context manager |
-| `errors.py` | `MCPError` hierarchy (`ValidationError`, `ConnectionError`, `QueryError`, `TimeoutError`), error sanitization |
+| `errors.py` | Error sanitization (credentials, IPs, echoed data values), simplification of common SQL Server errors, error-response builder |
 | `logging_config.py` | `StructuredFormatter` (JSON), `StandardFormatter` (text), request ID correlation via `ContextVar` |
 | `utils.py` | Lazy import helpers to break circular dependencies between tools/resources and server |
 | `tools/` | Tool implementations organized by domain (query, schema, objects, procedures, registry) |
@@ -655,6 +655,9 @@ Error messages are automatically scrubbed to remove:
 - IP addresses
 - Usernames and passwords
 - Connection string details (SERVER, UID, PWD)
+- Data values SQL Server echoes in errors: duplicate key values (2627/2601), truncated values (2628), and values in conversion failures (245)
+
+Object names (e.g. `Invalid object name 'dbo.Req'`) are kept for debugging.
 
 ## Connection Pooling
 
@@ -721,17 +724,7 @@ Request correlation IDs are tracked via `contextvars.ContextVar` for tracing ope
 
 ### Error Handling
 
-Custom exception hierarchy with consistent response format:
-
-```
-MCPError
-  +-- ValidationError   (blocked keyword, invalid SQL)
-  +-- ConnectionError   (database unreachable)
-  +-- QueryError        (execution failure)
-  +-- TimeoutError      (operation timed out)
-```
-
-All exceptions produce sanitized error responses:
+Tools never raise to the client. Every failure is returned as a sanitized error dictionary:
 ```json
 {
   "success": false,

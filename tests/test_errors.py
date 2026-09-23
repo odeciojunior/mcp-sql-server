@@ -1,0 +1,55 @@
+"""Tests for error sanitization and simplification."""
+
+import pytest
+
+from mcp_sql_server import errors
+from mcp_sql_server.errors import create_error_response, sanitize_error
+
+
+class TestValueRedaction:
+    def test_duplicate_key_value(self):
+        msg = (
+            "Violation of PRIMARY KEY constraint 'PK_Cliente'. Cannot insert duplicate key "
+            "in object 'dbo.Cliente'. The duplicate key value is (123.456.789-00)."
+        )
+        out = sanitize_error(msg)
+        assert "123.456.789-00" not in out
+        assert "The duplicate key value is ([REDACTED])" in out
+
+    def test_duplicate_key_value_with_nested_parens(self):
+        out = sanitize_error("The duplicate key value is (a, (b)).")
+        assert "(b)" not in out
+
+    def test_truncated_value(self):
+        msg = (
+            "String or binary data would be truncated in table 'db.dbo.T', column 'Nome'. "
+            "Truncated value: 'Maria da Silva'."
+        )
+        out = sanitize_error(msg)
+        assert "Maria" not in out
+        assert "Truncated value: '[REDACTED]'" in out
+
+    def test_conversion_failed(self):
+        msg = "Conversion failed when converting the varchar value 'abc''d' to data type int."
+        out = sanitize_error(msg)
+        assert "abc" not in out
+        assert "the varchar value '[REDACTED]' to data type int" in out
+
+    def test_object_names_kept(self):
+        assert "dbo.Req" in sanitize_error("Invalid object name 'dbo.Req'.")
+
+    def test_credentials_still_redacted(self):
+        out = sanitize_error("Login failed for user 'admin'. SERVER=10.0.0.5;PWD=x;")
+        assert "admin" not in out
+        assert "10.0.0.5" not in out
+
+    def test_response_uses_redaction(self):
+        resp = create_error_response("Truncated value: 'secret'.")
+        assert "secret" not in resp["error"]
+
+
+@pytest.mark.parametrize(
+    "name", ["MCPError", "ValidationError", "ConnectionError", "QueryError", "TimeoutError"]
+)
+def test_unused_exception_classes_removed(name):
+    assert not hasattr(errors, name)

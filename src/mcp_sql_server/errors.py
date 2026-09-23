@@ -14,6 +14,13 @@ SENSITIVE_PATTERNS = [
     (r"PWD=([^;]+)", "PWD=[REDACTED]"),
     # IP addresses
     (r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "[REDACTED_IP]"),
+    # Data values echoed by SQL Server in constraint/conversion errors
+    (r"The duplicate key value is \([^\r\n]*\)", "The duplicate key value is ([REDACTED])"),
+    (r"Truncated value: '(?:[^']|'')*'", "Truncated value: '[REDACTED]'"),
+    (
+        r"(Conversion failed when converting the [\w ]+? value )'(?:[^']|'')*'",
+        r"\1'[REDACTED]'",
+    ),
     # Database names in errors (optional - may want to keep these)
     # (r"database '([^']+)'", "database '[REDACTED]'"),
 ]
@@ -101,45 +108,3 @@ def create_error_response(
         response["error_context"] = context
 
     return response
-
-
-class MCPError(Exception):
-    """Base exception for MCP server errors."""
-
-    def __init__(self, message: str, context: str = ""):
-        super().__init__(message)
-        self.message = message
-        self.context = context
-
-    def to_response(self) -> dict[str, Any]:
-        """Convert to error response dictionary."""
-        return create_error_response(self.message, self.context)
-
-
-class ValidationError(MCPError):
-    """Raised when SQL validation fails."""
-
-    def __init__(self, message: str, blocked_keyword: str | None = None):
-        super().__init__(message, context="validation")
-        self.blocked_keyword = blocked_keyword
-
-
-class ConnectionError(MCPError):
-    """Raised when database connection fails."""
-
-    def __init__(self, message: str):
-        super().__init__(message, context="connection")
-
-
-class QueryError(MCPError):
-    """Raised when query execution fails."""
-
-    def __init__(self, message: str):
-        super().__init__(message, context="query")
-
-
-class TimeoutError(MCPError):
-    """Raised when an operation times out."""
-
-    def __init__(self, message: str):
-        super().__init__(message, context="timeout")
