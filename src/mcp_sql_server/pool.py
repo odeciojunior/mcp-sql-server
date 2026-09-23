@@ -226,7 +226,13 @@ class ConnectionPool:
                         logger.warning(f"Failed to create new connection: {e}")
                         with self._lock:
                             self._failed_acquisitions += 1
-                        # Continue waiting for available connection
+                            nothing_to_wait_for = self._created_count == 0
+                        if nothing_to_wait_for:
+                            # No connection exists that could be released to
+                            # us; retrying would repeat the failing login
+                            # every poll until the timeout.
+                            raise
+                        # Others are checked out: wait for one to come back.
                         continue
 
     def release(self, pooled_conn: PooledConnection) -> None:

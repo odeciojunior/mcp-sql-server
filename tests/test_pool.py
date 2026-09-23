@@ -567,3 +567,30 @@ class TestInvalidConnections:
 
     def test_new_connection_is_valid(self):
         assert PooledConnection(connection=MagicMock()).invalid is False
+
+
+class TestCreationFailure:
+    def test_fails_fast_when_nothing_can_be_created(self, db_config):
+        cfg = PoolConfig(min_size=1, max_size=3, acquire_timeout=5.0)
+        with patch("pyodbc.connect", side_effect=pyodbc.Error("login failed")) as mock_connect:
+            pool = ConnectionPool(db_config, cfg)
+            started = time.monotonic()
+            with pytest.raises(pyodbc.Error, match="login failed"):
+                pool.acquire()
+            assert time.monotonic() - started < 1.0
+            # one pre-create attempt at init + one attempt in acquire
+            assert mock_connect.call_count <= 2
+            assert pool.stats()["failed_acquisitions"] == 1
+            pool.close()
+
+    def test_waits_when_other_connections_exist(self, db_config):
+        cfg = PoolConfig(min_size=1, max_size=2, acquire_timeout=0.5)
+        with patch("pyodbc.connect") as mock_connect:
+            mock_connect.return_value = MagicMock()
+            pool = ConnectionPool(db_config, cfg)
+            held = pool.acquire()
+            mock_connect.side_effect = pyodbc.Error("login failed")
+            with pytest.raises(TimeoutError):
+                pool.acquire()
+            pool.release(held)
+            pool.close()
