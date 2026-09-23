@@ -482,3 +482,12 @@ Found while writing the implementation plan against the actual code; the plan im
 | §1.2 modify mode | A top-level `SELECT` is rejected after `VALUES`/`DEFAULT` | `INSERT ... VALUES (1) SELECT ...` would otherwise stack a second statement |
 | §2.5 registry | `list_databases()` includes misconfigured aliases; valid entries in `get_database_info()` gain `"status": "ok"`; `DatabaseRegistry(..., config_errors=...)` accepts a misconfigured `default` | Lets `list_databases` and the `sqlserver://databases` resource show broken aliases |
 | §5 | `test_registry.py::test_from_env` is rewritten to patch the per-alias loaders | `from_env` no longer calls `load_all_*` |
+
+---
+
+## Appendix C — Found during the live check (revision 5)
+
+| Finding | Resolution |
+|---|---|
+| `get_database_names()` called `load_dotenv()` before `DatabaseConfig.from_env()` snapshotted explicit `DB_*`, so `.env` `DB_*` outranked `SQL_SERVER_*` on every real startup (pre-existing on `main`). The server targeted the `.env` database instead of the configured one. | Plan Task 15: `.env` is read with `dotenv_values` and never merged into `os.environ`; every loader resolves process env → `.env` explicitly. Precedence: process `DB_*` > `SQL_SERVER_*` (process, then `.env`) > `.env` `DB_*`. |
+| `ConnectionPool.acquire()` retried a failing login every 100 ms until `acquire_timeout` (~10 logins per query). | Plan Task 16: re-raise the creation error immediately when the pool holds no connections; keep waiting only when others are checked out. |
