@@ -42,8 +42,8 @@ def list_procedures(
         else:
             return _list_procedures_cached(None, database=database)
     except Exception as e:
-        logger.error(f"Error listing procedures: {e}")
-        return {"error": str(e), "success": False}
+        logger.error(f"Error listing procedures: {sanitize_error(e)}")
+        return {"error": sanitize_error(e), "success": False}
 
 
 @cached(ttl=METADATA_CACHE_TTL, key_prefix="list_procedures")

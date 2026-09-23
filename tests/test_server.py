@@ -416,6 +416,18 @@ class TestListTablesTool:
             assert result["success"] is False
             assert "Connection lost" in result["error"]
 
+    def test_list_tables_error_is_sanitized(self):
+        """F10: schema_discovery's except-Exception handlers must sanitize, not str(e)."""
+        with patch.object(schema_discovery, '_get_db') as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.side_effect = Exception("Login failed for user 'bob'")
+            mock_get_db.return_value = mock_db
+
+            result = list_tables()
+
+            assert result["success"] is False
+            assert "bob" not in result["error"]
+
     def test_list_tables_empty_result(self):
         with patch.object(schema_discovery, '_get_db') as mock_get_db:
             mock_db = MagicMock()

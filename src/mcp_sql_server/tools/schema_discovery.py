@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from ..cache import cached
+from ..errors import sanitize_error
 from ..security import sanitize_table_name, validate_identifier
 from ..utils import get_db as _get_db
 
@@ -37,7 +38,7 @@ def list_tables(
             return _list_tables_cached(None, database=database)
     except Exception as e:
         logger.error(f"Error listing tables: {e}")
-        return {"error": str(e), "success": False}
+        return {"error": sanitize_error(e), "success": False}
 
 
 @cached(ttl=METADATA_CACHE_TTL, key_prefix="list_tables")
@@ -84,13 +85,13 @@ def describe_table(
     try:
         sanitize_table_name(table_name, schema)
     except ValueError as e:
-        return {"error": str(e), "success": False}
+        return {"error": sanitize_error(e), "success": False}
 
     try:
         return _describe_table_cached(table_name, schema, database=database)
     except Exception as e:
         logger.error(f"Error describing table: {e}")
-        return {"error": str(e), "success": False}
+        return {"error": sanitize_error(e), "success": False}
 
 
 @cached(ttl=METADATA_CACHE_TTL, key_prefix="describe_table")
