@@ -1,18 +1,18 @@
-"""MCP SQL Server - Main FastMCP server implementation."""
+"""MCP SQL Server - Main MCPServer implementation."""
 
 import logging
 import threading
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
+from . import __version__
 from .database import DatabaseManager
 from .registry import DatabaseRegistry
 
 # Import tools and resources for registration
 from .tools import (
-    ALL_TOOLS,
     describe_table,
     execute_procedure,
     execute_query,
@@ -25,7 +25,6 @@ from .tools import (
     list_tables,
 )
 from .resources import (
-    ALL_RESOURCES,
     resource_database_info,
     resource_databases,
     resource_functions,
@@ -43,7 +42,7 @@ _registry_lock = threading.Lock()
 
 
 @asynccontextmanager
-async def lifespan(app: FastMCP) -> AsyncIterator[None]:
+async def lifespan(app: MCPServer) -> AsyncIterator[None]:
     """Manage server lifecycle - cleanup on shutdown."""
     yield
     # Shutdown cleanup
@@ -53,9 +52,13 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
         logger.info("Database registry closed")
 
 
-# Initialize FastMCP server
-mcp = FastMCP(
+# Initialize the MCP server.
+# Only `name` is passed positionally: MCPServer's positional order is
+# (name, title, description, instructions, ...), so a positional argument
+# after the name silently lands in `title` instead.
+mcp = MCPServer(
     "MCP SQL Server",
+    version=__version__,
     dependencies=["pyodbc", "python-dotenv", "pydantic"],
     lifespan=lifespan,
 )
@@ -87,7 +90,7 @@ def get_db(database: str = "default") -> DatabaseManager:
     return get_registry().get(database)
 
 
-# Register tools with FastMCP
+# Register tools
 @mcp.tool()
 def _execute_query(
     sql: str,
@@ -277,7 +280,7 @@ def _list_databases() -> dict[str, Any]:
     return list_databases()
 
 
-# Register resources with FastMCP
+# Register resources
 @mcp.resource("sqlserver://tables")
 def _resource_tables() -> str:
     """List all tables in the database."""

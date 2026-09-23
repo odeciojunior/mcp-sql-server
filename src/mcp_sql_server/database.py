@@ -60,11 +60,20 @@ class DatabaseManager:
             calling close() or using get_cursor() instead to ensure the connection
             is properly released back to the pool.
 
+        Warning:
+            This method is NOT thread-safe: it mutates the shared instance
+            attributes `_connection` and `_current_pooled_conn` without a lock.
+            Under mcp 2.x, synchronous tool handlers run in worker threads and
+            may execute concurrently, so calling this from more than one thread
+            can interleave and lose a connection. Use get_cursor() instead --
+            it delegates to the pool, which is lock-protected, and is the path
+            every tool takes.
+
         Returns:
             A pyodbc.Connection object.
 
         Example:
-            # Preferred approach (works with both pooling modes):
+            # Preferred approach (works with both pooling modes, thread-safe):
             with db.get_cursor() as cursor:
                 cursor.execute("SELECT 1")
 

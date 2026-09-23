@@ -34,7 +34,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
                              | stdio
                     +--------v---------+
                     |    server.py     |
-                    |  FastMCP Server  |
+                    |   MCP Server     |
                     +--------+---------+
                              |
               +--------------+--------------+
@@ -72,7 +72,7 @@ Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_co
 
 | Module | Purpose |
 |--------|---------|
-| `server.py` | FastMCP initialization, tool/resource registration, lifecycle |
+| `server.py` | MCPServer initialization, tool/resource registration, lifecycle |
 | `registry.py` | Named multi-database management with lazy initialization |
 | `database.py` | Connection management, cursor context managers, query execution |
 | `pool.py` | Thread-safe connection pooling with health checks and retirement |
@@ -141,7 +141,7 @@ Each alias reads prefixed env vars (`DB_{ALIAS}_*`) and gets independent pool co
 
 ## Testing
 
-337 tests with 85%+ coverage. Tests use mocked database connections (no live DB required).
+369 tests with 85%+ coverage. Tests use mocked database connections (no live DB required).
 
 Key test files:
 - `test_server.py` - Tool and resource integration tests
@@ -153,6 +153,8 @@ Key test files:
 - `test_cache.py` - TTL cache behavior
 - `test_audit.py` - Audit logging and query hashing
 - `test_errors.py` - Error hierarchy and sanitization
+- `test_server_registration.py` - MCP SDK registration surface (tool/resource names, schemas)
+- `test_concurrency.py` - Parallel pool/registry access (mcp 2.x runs sync handlers in threads)
 
 ## Type Safety
 

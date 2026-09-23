@@ -1,6 +1,6 @@
 # MCP SQL Server
 
-A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI assistants to interact with Microsoft SQL Server databases. Built with [FastMCP](https://github.com/jlowin/fastmcp), it provides tools for executing queries, exploring schemas, retrieving object definitions, and managing stored procedures -- with multi-database support, connection pooling, caching, audit logging, and security validation.
+A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI assistants to interact with Microsoft SQL Server databases. Built on the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (`MCPServer`, SDK 2.x), it provides tools for executing queries, exploring schemas, retrieving object definitions, and managing stored procedures -- with multi-database support, connection pooling, caching, audit logging, and security validation.
 
 ## Features
 
@@ -26,7 +26,7 @@ A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server
                              | stdio
                     +--------v---------+
                     |    server.py     |
-                    |  FastMCP Server  |
+                    |   MCP Server     |
                     |  (tool & resource|
                     |   registration)  |
                     +--------+---------+
@@ -82,7 +82,7 @@ Cross-Cutting Concerns:
 
 | Module | Responsibility |
 |--------|----------------|
-| `server.py` | FastMCP server initialization, tool/resource registration, lifecycle management |
+| `server.py` | MCPServer initialization, tool/resource registration, lifecycle management |
 | `registry.py` | Named database management with lazy initialization and thread-safe access |
 | `database.py` | Connection management, cursor context managers, query/statement execution |
 | `pool.py` | Thread-safe connection pooling with `Queue`, health checks, stale/idle retirement |
@@ -729,7 +729,7 @@ Common SQL Server errors are automatically simplified (e.g., `"Invalid object na
 
 ## Testing
 
-The test suite contains 337 tests covering all modules.
+The test suite contains 369 tests covering all modules.
 
 ```bash
 # Run all tests
@@ -784,7 +784,7 @@ pyproject.toml                             # Package metadata, dependencies, myp
 +-- src/
 |   +-- mcp_sql_server/
 |       +-- __init__.py                    # Package version
-|       +-- server.py                      # FastMCP server, tool/resource registration
+|       +-- server.py                      # MCPServer, tool/resource registration
 |       +-- database.py                    # DatabaseManager with pooled/non-pooled modes
 |       +-- pool.py                        # Thread-safe ConnectionPool
 |       +-- config.py                      # Pydantic configs, .env loading, multi-DB support
@@ -847,10 +847,10 @@ pyproject.toml                             # Package metadata, dependencies, myp
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `mcp` | >=1.2.0 | Model Context Protocol SDK (FastMCP) |
+| `mcp` | >=2.0,<3 | Model Context Protocol SDK (`MCPServer`) |
 | `pyodbc` | >=5.0.0 | ODBC database connectivity |
 | `python-dotenv` | >=1.0.0 | Environment variable loading from `.env` |
-| `pydantic` | >=2.0.0 | Configuration validation and modeling |
+| `pydantic` | >=2.12 | Configuration validation and modeling |
 
 ### Development
 
