@@ -1,7 +1,7 @@
 # Fix Recap Problems — Design
 
 **Date:** 2026-09-23
-**Status:** Revision 3 — incorporates every finding from three adversarial reviews (SQL security, runtime correctness, completeness); Appendix A maps each finding to its resolution. Awaiting written-spec review.
+**Status:** Revision 4 — revision 3 plus plan-time corrections (Appendix B). Implementation plan: `docs/superpowers/plans/2026-09-23-fix-recap-problems.md`.
 **Scope:** Resolve every open problem found in the 2026-09-23 codebase recap of `mcp-sql-server` (HEAD `5434c81`).
 
 ## Goal and success criteria
@@ -465,3 +465,20 @@ Three independent reviews of revision 1 (commit `a357023`). Every finding is lis
 | `DatabaseRegistry.close()` swallows errors | Correct for a shutdown path (§2.4); verified by review |
 | "Stale" comment at `server.py:56-58` | Accurate; documents the positional-argument trap (§3.5) |
 | Named aliases lack `SQL_SERVER_*` fallback | Documented as intentional in `.claude/rules/sql-server-connection.md` |
+
+---
+
+## Appendix B — Plan-time corrections (revision 4)
+
+Found while writing the implementation plan against the actual code; the plan implements these, and they supersede the sections named.
+
+| Section | Correction | Reason |
+|---|---|---|
+| §2.5 `main()` step 1 | Read `LOG_LEVEL`/`LOG_FORMAT` with `dotenv_values` (process env first); do **not** call `load_dotenv` in `main()` | `DatabaseConfig.from_env` snapshots process `DB_*` before loading `.env` to rank explicit config above `SQL_SERVER_*`; loading `.env` earlier would make file values look explicit and break that precedence |
+| §1.3, §1.4 | `DatabaseManager.execute_query(sql, params, max_rows=None, server_limit=False)`; `execute_query` tool passes `max_rows=limit+1, server_limit=True`; `execute_procedure` passes only `max_rows` | §1.5 requires procedures to use `fetchmany` without `SET ROWCOUNT`; one flag keeps both on one method |
+| §1.4 | Reset runs `SET ROWCOUNT 0` and `SELECT DB_NAME()` as two statements | Avoids depending on result-set positioning of a multi-statement batch in pyodbc |
+| §1.4 | Non-pooled `SessionStateError` closes and drops `_connection` | Non-pooled mode has no pool to retire the connection |
+| §1.2 | `STATEMENT_WORDS` gains `ADD`; `BLOCKED_PAIRS` gains `(GET, CONVERSATION)`, `(MOVE, CONVERSATION)`, `(END, CONVERSATION)`; `BLOCKED_FUNCTIONS` matched as plain words (the tokenizer already splits `sys.` off) | `ADD SIGNATURE` / `ADD SENSITIVITY CLASSIFICATION` and Service Broker statements are further statement starters |
+| §1.2 modify mode | A top-level `SELECT` is rejected after `VALUES`/`DEFAULT` | `INSERT ... VALUES (1) SELECT ...` would otherwise stack a second statement |
+| §2.5 registry | `list_databases()` includes misconfigured aliases; valid entries in `get_database_info()` gain `"status": "ok"`; `DatabaseRegistry(..., config_errors=...)` accepts a misconfigured `default` | Lets `list_databases` and the `sqlserver://databases` resource show broken aliases |
+| §5 | `test_registry.py::test_from_env` is rewritten to patch the per-alias loaders | `from_env` no longer calls `load_all_*` |
