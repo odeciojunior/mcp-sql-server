@@ -171,11 +171,121 @@ class TestDatabaseConfigFromEnv:
             assert "database" in str(exc_info.value)
 
     def test_from_env_with_custom_path(self, sample_env):
-        config = DatabaseConfig.from_env(env_path=sample_env)
+        saved = {k: v for k, v in os.environ.items() if k.startswith("SQL_SERVER_")}
+        for key in saved:
+            del os.environ[key]
+        try:
+            config = DatabaseConfig.from_env(env_path=sample_env)
+        finally:
+            os.environ.update(saved)
         assert config.host == "localhost"
         assert config.user == "testuser"
         assert config.password == "testpass"
         assert config.database == "testdb"
+
+
+class TestEnvVarPrecedence:
+    """Tests for SQL_SERVER_* vs DB_* precedence in DatabaseConfig.from_env().
+
+    Precedence, highest first:
+      1. DB_* set in the real process environment (explicit config, e.g. an MCP
+         client injecting them via .mcp.json)
+      2. SQL_SERVER_* (injected via .claude/settings.local.json)
+      3. DB_* read from the .env file
+    """
+
+    def test_process_env_db_beats_sql_server(self, tmp_path):
+        """DB_* injected into the process env wins over SQL_SERVER_*."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch.dict(
+            os.environ,
+            {
+                "DB_HOST": "from-mcp-json",
+                "DB_USER": "mcp_user",
+                "DB_PASSWORD": "mcp_pass",
+                "DB_NAME": "McpDb",
+                "DB_PORT": "1500",
+                "SQL_SERVER_HOST": "from-settings",
+                "SQL_SERVER_USER": "settings_user",
+                "SQL_SERVER_PASSWORD": "settings_pass",
+                "SQL_SERVER_DATABASE": "SettingsDb",
+                "SQL_SERVER_PORT": "1600",
+            },
+            clear=True,
+        ):
+            config = DatabaseConfig.from_env(env_path=env_file)
+        assert config.host == "from-mcp-json"
+        assert config.user == "mcp_user"
+        assert config.password == "mcp_pass"
+        assert config.database == "McpDb"
+        assert config.port == 1500
+
+    def test_sql_server_beats_dotenv_file(self, tmp_path):
+        """SQL_SERVER_* still wins over DB_* that come from the .env file."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "DB_HOST=from-dotenv\nDB_USER=dotenv_user\n"
+            "DB_PASSWORD=dotenv_pass\nDB_NAME=DotenvDb\n"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "SQL_SERVER_HOST": "from-settings",
+                "SQL_SERVER_USER": "settings_user",
+                "SQL_SERVER_PASSWORD": "settings_pass",
+                "SQL_SERVER_DATABASE": "SettingsDb",
+            },
+            clear=True,
+        ):
+            config = DatabaseConfig.from_env(env_path=env_file)
+        assert config.host == "from-settings"
+        assert config.user == "settings_user"
+        assert config.database == "SettingsDb"
+
+    def test_sql_server_used_when_no_db_vars(self, tmp_path):
+        """SQL_SERVER_* is used when no DB_* exist anywhere."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch.dict(
+            os.environ,
+            {
+                "SQL_SERVER_HOST": "only-settings",
+                "SQL_SERVER_USER": "u",
+                "SQL_SERVER_PASSWORD": "p",
+                "SQL_SERVER_DATABASE": "D",
+            },
+            clear=True,
+        ):
+            config = DatabaseConfig.from_env(env_path=env_file)
+        assert config.host == "only-settings"
+        assert config.database == "D"
+
+    def test_empty_process_db_var_falls_through(self, tmp_path):
+        """An empty DB_* in the process env does not mask SQL_SERVER_*."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch.dict(
+            os.environ,
+            {
+                "DB_HOST": "",
+                "SQL_SERVER_HOST": "from-settings",
+                "SQL_SERVER_USER": "u",
+                "SQL_SERVER_PASSWORD": "p",
+                "SQL_SERVER_DATABASE": "D",
+            },
+            clear=True,
+        ):
+            config = DatabaseConfig.from_env(env_path=env_file)
+        assert config.host == "from-settings"
+
+    def test_missing_everywhere_raises(self, tmp_path):
+        """No DB_* and no SQL_SERVER_* anywhere raises ValidationError."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(ValidationError):
+                DatabaseConfig.from_env(env_path=env_file)
 
 
 class TestGetConnectionString:

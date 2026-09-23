@@ -174,6 +174,10 @@ def mock_get_db(mock_db_manager: "DatabaseManager") -> Generator[MagicMock, None
 def env_with_vars(complete_env_vars: dict[str, str]) -> Generator[None, None, None]:
     """Context manager that sets environment variables for testing."""
     original_env = os.environ.copy()
+    # Clear SQL_SERVER_* vars so they don't shadow DB_* test vars
+    for key in list(os.environ.keys()):
+        if key.startswith("SQL_SERVER_") or key.startswith("DB_"):
+            del os.environ[key]
     os.environ.update(complete_env_vars)
     try:
         yield
@@ -188,7 +192,7 @@ def env_with_minimal_vars(minimal_env_vars: dict[str, str]) -> Generator[None, N
     original_env = os.environ.copy()
     # Clear relevant env vars first
     for key in list(os.environ.keys()):
-        if key.startswith("DB_"):
+        if key.startswith("DB_") or key.startswith("SQL_SERVER_"):
             del os.environ[key]
     os.environ.update(minimal_env_vars)
     try:

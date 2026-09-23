@@ -96,24 +96,48 @@ class DatabaseConfig(BaseModel):
 
     @classmethod
     def from_env(cls, env_path: Path | None = None) -> "DatabaseConfig":
-        """Load configuration from .env file."""
+        """Load configuration from .env file.
+
+        Precedence, highest first:
+
+        1. DB_* set in the real process environment. These are explicit
+           configuration -- an MCP client injecting them via .mcp.json, or a
+           caller exporting them deliberately.
+        2. SQL_SERVER_* (injected via .claude/settings.local.json).
+        3. DB_* read from the .env file.
+
+        The process-environment tier matters because load_dotenv() merges .env
+        values into os.environ, after which a DB_* from the file is
+        indistinguishable from one the caller set. Snapshotting first keeps
+        SQL_SERVER_* from silently overriding explicit configuration.
+        """
         if env_path is None:
             # Look for .env in parent directory (repo root)
             env_path = Path(__file__).parent.parent.parent / ".env"
 
+        # Capture explicit DB_* vars before .env values are merged in.
+        explicit_db = {k: v for k, v in os.environ.items() if k.startswith("DB_")}
+
         load_dotenv(env_path)
 
+        def _get(sql_server_key: str, db_key: str, default: str = "") -> str:
+            explicit = explicit_db.get(db_key)
+            if explicit:
+                return explicit
+            value = os.getenv(sql_server_key) or os.getenv(db_key)
+            return value if value else default
+
         return cls(
-            host=os.getenv("DB_HOST", ""),
-            port=int(os.getenv("DB_PORT", "1433")),
-            user=os.getenv("DB_USER", ""),
-            password=os.getenv("DB_PASSWORD", ""),
-            database=os.getenv("DB_NAME", ""),
-            driver=os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server"),
+            host=_get("SQL_SERVER_HOST", "DB_HOST"),
+            port=int(_get("SQL_SERVER_PORT", "DB_PORT", "1433")),
+            user=_get("SQL_SERVER_USER", "DB_USER"),
+            password=_get("SQL_SERVER_PASSWORD", "DB_PASSWORD"),
+            database=_get("SQL_SERVER_DATABASE", "DB_NAME"),
+            driver=_get("SQL_SERVER_DRIVER", "DB_DRIVER", "ODBC Driver 17 for SQL Server"),
             connection_timeout=int(os.getenv("DB_TIMEOUT", "30")),
             query_timeout=int(os.getenv("DB_QUERY_TIMEOUT", "120")),
-            encrypt=os.getenv("DB_ENCRYPT", "").lower() in ("true", "1", "yes"),
-            trust_cert=os.getenv("DB_TRUST_CERT", "").lower() in ("true", "1", "yes"),
+            encrypt=_get("SQL_SERVER_ENCRYPT", "DB_ENCRYPT").lower() in ("true", "1", "yes"),
+            trust_cert=_get("SQL_SERVER_TRUST_CERT", "DB_TRUST_CERT").lower() in ("true", "1", "yes"),
         )
 
     @classmethod

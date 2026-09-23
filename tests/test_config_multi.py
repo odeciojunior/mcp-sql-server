@@ -20,7 +20,7 @@ def multi_db_env() -> Generator[None, None, None]:
     """Set up environment variables for multi-database config."""
     original_env = os.environ.copy()
     for key in list(os.environ.keys()):
-        if key.startswith("DB_"):
+        if key.startswith("DB_") or key.startswith("SQL_SERVER_"):
             del os.environ[key]
 
     os.environ.update({
@@ -55,7 +55,7 @@ def single_db_env() -> Generator[None, None, None]:
     """Set up environment for single database (no DB_DATABASES)."""
     original_env = os.environ.copy()
     for key in list(os.environ.keys()):
-        if key.startswith("DB_"):
+        if key.startswith("DB_") or key.startswith("SQL_SERVER_"):
             del os.environ[key]
 
     os.environ.update({
