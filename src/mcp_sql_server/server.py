@@ -328,9 +328,8 @@ def _resource_databases() -> str:
 def _logging_settings() -> tuple[str | None, str | None]:
     """LOG_LEVEL/LOG_FORMAT from the process env, else from .env.
 
-    Reads .env without modifying os.environ: DatabaseConfig.from_env relies
-    on os.environ holding only explicitly set DB_* values until it loads
-    .env itself.
+    Reads .env without modifying os.environ; no loader in this package ever
+    merges .env into the process environment.
     """
     file_values = dotenv_values(DEFAULT_ENV_PATH)  # {} when the file is missing
     level = os.environ.get("LOG_LEVEL") or file_values.get("LOG_LEVEL")

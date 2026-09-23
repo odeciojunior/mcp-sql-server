@@ -46,7 +46,12 @@ class StructuredFormatter(logging.Formatter):
 
 
 class StandardFormatter(logging.Formatter):
-    """Standard text formatter for console output."""
+    """Standard text formatter for console output.
+
+    References %(request_id)s, so the handler using this formatter must
+    also have a RequestIdFilter attached (setup_logging does this) or
+    formatting will raise a KeyError for records missing that attribute.
+    """
 
     def __init__(self) -> None:
         super().__init__(
