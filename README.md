@@ -88,6 +88,7 @@ Cross-Cutting Concerns:
 | `pool.py` | Thread-safe connection pooling with `Queue`, health checks, stale/idle retirement |
 | `config.py` | Pydantic `DatabaseConfig` and `PoolConfig` models, `.env` loading, multi-DB env parsing |
 | `security.py` | SQL validation, blocked keyword detection, identifier sanitization, bracket quoting |
+| `sql_lexer.py` | Dependency-free T-SQL tokenizer (words, strings, quoted identifiers, numbers, paren depth) used by validation and audit masking |
 | `cache.py` | `TTLCache` class with thread-safe get/set, `@cached` decorator, global metadata cache |
 | `audit.py` | `AuditLogger` for queries/statements/procedures, SQL hashing, `timed_operation()` context manager |
 | `errors.py` | `MCPError` hierarchy (`ValidationError`, `ConnectionError`, `QueryError`, `TimeoutError`), error sanitization |
@@ -460,6 +461,8 @@ Execute a data modification statement (INSERT, UPDATE, DELETE).
 | `params` | `list[str]` | `None` | Positional parameter values for `?` placeholders |
 | `database` | `str` | `"default"` | Target database alias |
 
+Only one statement is allowed per call; see [SQL Validation](#sql-validation).
+
 **Response:**
 ```json
 {
@@ -609,22 +612,32 @@ Resources return formatted markdown strings for browsing database metadata.
 
 ### SQL Validation
 
-All queries and statements pass through security validation before execution.
+All queries and statements are tokenized before execution. Keywords inside string literals, quoted identifiers (`[...]`, `"..."`), and comments are ignored, so `WHERE note = 'DROP'` and leading `-- comments` are fine.
 
 **Blocked Keywords (DDL/DCL/Admin):**
 
 | Category | Keywords |
 |----------|----------|
 | DDL | `DROP`, `TRUNCATE`, `ALTER`, `CREATE` |
-| DCL | `GRANT`, `REVOKE` |
-| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL` |
+| DCL | `GRANT`, `REVOKE`, `DENY` |
+| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL`, `RECONFIGURE`, `CHECKPOINT` |
 | External Access | `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `BULK` |
+| Dynamic SQL / control flow | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD` |
+| Legacy text/image | `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
+| Side effects | `NEXT VALUE FOR`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION` |
+| File readers | `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file` |
 
 **Blocked Prefixes:** `xp_*`, `sp_*` (system stored procedures)
 
-**Statement Type Enforcement:**
-- `execute_query` only accepts `SELECT` and `WITH` as the first keyword
-- `execute_statement` only accepts `INSERT`, `UPDATE`, and `DELETE`
+**One statement per call.** T-SQL does not need `;` between statements, so the validator allows only one statement at the top level (outside parentheses). A single trailing `;` is fine.
+
+- `execute_query` accepts only `SELECT` or `WITH` first, rejects `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `INTO`, and `SET` anywhere, and allows a second top-level `SELECT` only after `UNION`, `EXCEPT`, or `INTERSECT`.
+- `execute_statement` accepts only `INSERT`, `UPDATE`, or `DELETE` first. `SET` is allowed once in an `UPDATE`; a top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` or `OUTPUT ... INTO`.
+- CTE-prefixed DML (`WITH c AS (...) DELETE ...`) is not supported by either tool.
+
+Unbracketed column names that match a blocked word (for example `Send`, `Receive`, `Open`) must be written in brackets: `[Send]`.
+
+**Use a read-only login.** The validator is defense in depth. For read-only use, connect with a login that only has `db_datareader`.
 
 ### Identifier Validation
 
@@ -790,6 +803,7 @@ pyproject.toml                             # Package metadata, dependencies, myp
 |       +-- config.py                      # Pydantic configs, .env loading, multi-DB support
 |       +-- registry.py                    # DatabaseRegistry for named database management
 |       +-- security.py                    # SQL validation, keyword blocking
+|       +-- sql_lexer.py                   # T-SQL tokenizer for validation and masking
 |       +-- cache.py                       # TTLCache and @cached decorator
 |       +-- audit.py                       # AuditLogger, SQL hashing, timed_operation
 |       +-- errors.py                      # Exception hierarchy, error sanitization

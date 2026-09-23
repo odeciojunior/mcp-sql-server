@@ -261,7 +261,7 @@ class TestExecuteStatementTool:
     def test_execute_statement_select_rejected(self):
         result = execute_statement("SELECT * FROM Users")
         assert result["success"] is False
-        assert "execute_query" in result["error"]
+        assert "Statement type" in result["error"]
 
     def test_execute_statement_drop_blocked(self):
         result = execute_statement("DROP TABLE Users")

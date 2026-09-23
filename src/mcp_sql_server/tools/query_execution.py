@@ -9,6 +9,7 @@ from ..audit import audit_logger, timed_operation
 from ..config import get_query_dir
 from ..errors import create_error_response, sanitize_error
 from ..security import validate_query
+from ..sql_lexer import tokenize
 from ..utils import get_db as _get_db
 
 logger = logging.getLogger(__name__)
@@ -123,10 +124,8 @@ def execute_statement(
         audit_logger.log_validation_failure(sql, error, database=database)
         return {"error": error, "success": False}
 
-    # Additional check: must be a modification statement
-    first_word = sql.strip().upper().split()[0]
-    if first_word not in {"INSERT", "UPDATE", "DELETE"}:
-        return {"error": "Use execute_query for SELECT statements", "success": False}
+    # Validation guarantees the first token is INSERT, UPDATE, or DELETE.
+    first_word = tokenize(sql)[0].upper
 
     with timed_operation() as timing:
         try:

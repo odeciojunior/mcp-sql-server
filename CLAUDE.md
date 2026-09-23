@@ -65,7 +65,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
                     |  ConnectionPool  |
                     +------------------+
 
-Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_config.py
+Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_config.py, sql_lexer.py
 ```
 
 ### Module Responsibilities
@@ -78,6 +78,7 @@ Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_co
 | `pool.py` | Thread-safe connection pooling with health checks and retirement |
 | `config.py` | Pydantic config from `.env`, multi-DB env parsing |
 | `security.py` | SQL validation, blocked keyword detection, identifier sanitization |
+| `sql_lexer.py` | T-SQL tokenizer used by validation and audit masking |
 | `cache.py` | TTL cache with `@cached` decorator for metadata |
 | `audit.py` | Query hashing, execution timing, audit events |
 | `errors.py` | Exception hierarchy, error sanitization |
@@ -129,15 +130,21 @@ Each alias reads prefixed env vars (`DB_{ALIAS}_*`) and gets independent pool co
 | Category | Keywords |
 |----------|----------|
 | DDL | `DROP`, `TRUNCATE`, `ALTER`, `CREATE` |
-| DCL | `GRANT`, `REVOKE` |
-| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL` |
+| DCL | `GRANT`, `REVOKE`, `DENY` |
+| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL`, `RECONFIGURE`, `CHECKPOINT` |
 | External | `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `BULK` |
+| Statement starters | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD`, `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
+| Pairs / functions | `NEXT VALUE`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION`, `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file` |
 | System Procs | `xp_*`, `sp_*` prefixes |
+
+Validation tokenizes SQL (`sql_lexer.py`); strings, quoted identifiers, and comments are never checked for keywords.
 
 ### Statement Type Enforcement
 
-- `execute_query`: only `SELECT` and `WITH`
-- `execute_statement`: only `INSERT`, `UPDATE`, `DELETE`
+- One statement per call at parenthesis depth 0 (no reliance on `;`).
+- `execute_query`: first word `SELECT`/`WITH`; `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`INTO`/`SET` rejected anywhere; extra top-level `SELECT` only after `UNION`/`EXCEPT`/`INTERSECT`.
+- `execute_statement`: first word `INSERT`/`UPDATE`/`DELETE`; one `SET` in `UPDATE`; top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` / `OUTPUT ... INTO`.
+- CTE-prefixed DML is unsupported.
 
 ## Testing
 

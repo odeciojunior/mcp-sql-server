@@ -209,3 +209,108 @@ class TestValidateProcedureName:
         is_valid, error = validate_procedure_name("export_data")
         assert is_valid
         assert error == ""
+
+
+# pytest and validate_query are already imported at the top of this module.
+
+READ_ACCEPTED = [
+    "WITH c AS (SELECT 1 x) SELECT * FROM c",
+    "SELECT * FROM t ORDER BY id",
+    "SELECT a FROM t UNION ALL SELECT b FROM u",
+    "SELECT a FROM t EXCEPT SELECT b FROM u",
+    "SELECT * FROM t ORDER BY id OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY",
+    "-- note\nSELECT 1",
+    "SELECT * FROM t WHERE x = 'DROP'",
+    "SELECT [Create], Situação FROM t",
+    "SELECT 1 /* DROP */",
+    "SELECT 1;",
+    "SELECT 1; -- done",
+    "SELECT * FROM t WHERE a = ? AND b = ?",
+    "SELECT Situação FROM Req WHERE Descrição = N'Não'",
+    "SELECT * FROM t WITH (NOLOCK)",
+    "SELECT CASE WHEN a = 1 THEN 'x' END FROM t",
+    "SELECT * FROM t WHERE name = 'xp_cmdshell'",
+    "SELECT [sp_who] FROM t",
+    "SELECT * FROM t WHERE a IN (SELECT a FROM u)",
+]
+
+READ_REJECTED = [
+    ("SELECT 1; SELECT 2", "Multiple statements"),
+    ("SELECT 1 SELECT 2", "Multiple statements"),
+    ("SELECT 1 WAITFOR DELAY '00:01'", "WAITFOR"),
+    ("SELECT 1 USE master", "USE"),
+    ("SELECT 1 SET ROWCOUNT 0", "SET"),
+    ("WITH c AS (SELECT 1 x) DELETE FROM t", "DELETE"),
+    ("SELECT * INTO NewTable FROM t", "INTO"),
+    ("SELECT NEXT VALUE FOR dbo.Seq", "NEXT VALUE"),
+    ("SELECT * FROM sys.fn_trace_gettable('x', 1)", "FN_TRACE_GETTABLE"),
+    ("SELECT 'unterminated", "Invalid SQL"),
+    ("SELECT 1 --\rDELETE FROM t", "DELETE"),
+    ("SELECT 1 DECLARE @p int", "DECLARE"),
+    ("SELECT 1 BEGIN TRAN", "BEGIN"),
+    ("SELECT 1 COMMIT", "COMMIT"),
+    ("SELECT 1 DENY SELECT ON t TO u", "DENY"),
+    ("SELECT 1 EXEC('x')", "EXEC"),
+    ("SELECT 1 WRITETEXT t.c @p 'x'", "WRITETEXT"),
+    ("SELECT 1 DISABLE TRIGGER trg ON t", "DISABLE TRIGGER"),
+    ("SELECT 1 ADD SIGNATURE TO p BY CERTIFICATE c", "ADD"),
+    ("-- only a comment", "empty"),
+    ("(SELECT 1)", "Statement type"),
+]
+
+STATEMENT_ACCEPTED = [
+    "INSERT INTO t (a) SELECT a FROM u WHERE b = 1",
+    "INSERT INTO t (a) VALUES (?)",
+    "UPDATE t SET a = (SELECT MAX(b) FROM u) WHERE id = 1",
+    "UPDATE t SET a = 1 FROM t JOIN u ON t.id = u.id",
+    "DELETE FROM t OUTPUT deleted.id INTO audit WHERE id = 1",
+    "INSERT INTO t SELECT a FROM u UNION ALL SELECT b FROM v",
+    "update t set a = 1 where id = ?",
+]
+
+STATEMENT_REJECTED = [
+    ("INSERT INTO t VALUES (1); EXEC('x')", "Multiple statements"),
+    ("INSERT INTO t VALUES (1) EXEC('x')", "EXEC"),
+    ("INSERT INTO t VALUES (1) DELETE FROM u", "Multiple statements"),
+    ("UPDATE t SET a=1 SELECT * INTO x FROM y", "Multiple statements"),
+    ("UPDATE t SET a=1 DISABLE TRIGGER trg ON t", "DISABLE TRIGGER"),
+    ("UPDATE t SET a=1 SET b=2", "Multiple statements"),
+    ("INSERT INTO t VALUES (1) SELECT 1", "Multiple statements"),
+    ("INSERT INTO t SELECT 1 SELECT 2", "Multiple statements"),
+    ("INSERT INTO t SELECT * INTO x FROM y", "INTO not allowed"),
+    ("DELETE FROM t SET a = 1", "Multiple statements"),
+    ("SELECT 1", "Statement type"),
+    ("WITH c AS (SELECT 1 x) DELETE FROM t", "Statement type"),
+    ("MERGE t USING u ON 1=1 WHEN MATCHED THEN DELETE;", "Statement type"),
+]
+
+
+class TestTokenValidationReadMode:
+    @pytest.mark.parametrize("sql", READ_ACCEPTED)
+    def test_accepted(self, sql):
+        assert validate_query(sql) == (True, "")
+
+    @pytest.mark.parametrize("sql,fragment", READ_REJECTED)
+    def test_rejected(self, sql, fragment):
+        valid, error = validate_query(sql)
+        assert not valid
+        assert fragment.lower() in error.lower()
+
+
+class TestTokenValidationModifyMode:
+    @pytest.mark.parametrize("sql", STATEMENT_ACCEPTED)
+    def test_accepted(self, sql):
+        assert validate_query(sql, allow_modifications=True) == (True, "")
+
+    @pytest.mark.parametrize("sql,fragment", STATEMENT_REJECTED)
+    def test_rejected(self, sql, fragment):
+        valid, error = validate_query(sql, allow_modifications=True)
+        assert not valid
+        assert fragment.lower() in error.lower()
+
+
+class TestIdentifierUnaffectedByStatementWords:
+    def test_table_named_print_still_valid(self):
+        from mcp_sql_server.security import validate_identifier
+
+        assert validate_identifier("Print") == (True, "")
