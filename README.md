@@ -591,12 +591,14 @@ List all configured database connections (no parameters).
 {
   "success": true,
   "databases": [
-    {"name": "default", "host": "server1", "port": 1433, "database": "MyDB"},
-    {"name": "analytics", "host": "server2", "port": 1433, "database": "AnalyticsDB"}
+    {"name": "default", "host": "server1", "port": 1433, "database": "MyDB", "status": "ok"},
+    {"name": "archive", "status": "misconfigured", "error": "password: string_too_short"}
   ],
   "count": 2
 }
 ```
+
+A database whose configuration is invalid is listed with `"status": "misconfigured"` and a value-free error. Calls that target it return that error; other databases keep working.
 
 ## Available Resources
 

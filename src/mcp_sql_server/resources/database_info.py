@@ -198,11 +198,16 @@ def resource_databases() -> str:
 
         lines = [
             "# Configured Databases\n",
-            "| Name | Host | Port | Database |",
-            "|------|------|------|----------|",
+            "| Name | Host | Port | Database | Status |",
+            "|------|------|------|----------|--------|",
         ]
         for db in databases:
-            lines.append(f"| {db['name']} | {db['host']} | {db['port']} | {db['database']} |")
+            if db.get("status") == "misconfigured":
+                lines.append(f"| {db['name']} | - | - | - | misconfigured: {db['error']} |")
+            else:
+                lines.append(
+                    f"| {db['name']} | {db['host']} | {db['port']} | {db['database']} | ok |"
+                )
 
         return "\n".join(lines)
     except Exception as e:

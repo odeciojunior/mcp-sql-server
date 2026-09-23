@@ -8,8 +8,10 @@ from typing import Any
 from .config import (
     DatabaseConfig,
     PoolConfig,
-    load_all_database_configs,
-    load_all_pool_configs,
+    describe_config_error,
+    get_database_names,
+    load_database_config,
+    load_pool_config,
 )
 from .database import DatabaseManager
 
@@ -27,23 +29,32 @@ class DatabaseRegistry:
         self,
         configs: dict[str, DatabaseConfig],
         pool_configs: dict[str, PoolConfig] | None = None,
+        config_errors: dict[str, str] | None = None,
     ) -> None:
         """Initialize the registry.
 
         Args:
-            configs: Mapping of database alias -> DatabaseConfig. Must include "default".
+            configs: Mapping of alias -> DatabaseConfig for valid databases.
             pool_configs: Optional mapping of alias -> PoolConfig.
                           Missing aliases use PoolConfig defaults.
+            config_errors: Mapping of alias -> safe error message for
+                           databases whose configuration is invalid.
 
         Raises:
-            ValueError: If "default" is not in configs.
+            ValueError: If "default" is in neither configs nor config_errors.
         """
-        if "default" not in configs:
+        self._config_errors = dict(config_errors or {})
+        if "default" not in configs and "default" not in self._config_errors:
             raise ValueError("configs must include a 'default' database entry")
         self._configs = configs
         self._pool_configs = pool_configs or {}
         self._managers: dict[str, DatabaseManager] = {}
         self._lock = threading.Lock()
+
+    @property
+    def config_errors(self) -> dict[str, str]:
+        """Aliases whose configuration failed validation, with safe messages."""
+        return dict(self._config_errors)
 
     def get(self, name: str = "default") -> DatabaseManager:
         """Get or lazily create a DatabaseManager for the named database.
@@ -60,6 +71,11 @@ class DatabaseRegistry:
         # Fast path: already created
         if name in self._managers:
             return self._managers[name]
+
+        if name in self._config_errors:
+            raise ValueError(
+                f"Database '{name}' is misconfigured: {self._config_errors[name]}"
+            )
 
         # Validate name exists in config
         if name not in self._configs:
@@ -81,23 +97,32 @@ class DatabaseRegistry:
         return self._managers[name]
 
     def list_databases(self) -> list[str]:
-        """Return list of configured database alias names."""
-        return list(self._configs.keys())
+        """Return all configured alias names, including misconfigured ones."""
+        return [*self._configs, *(n for n in self._config_errors if n not in self._configs)]
 
     def get_database_info(self) -> list[dict[str, Any]]:
         """Return connection info for all databases (no passwords).
 
         Returns:
-            List of dicts with name, host, port, database fields.
+            One dict per alias. Valid: name, host, port, database, status "ok".
+            Misconfigured: name, status "misconfigured", error.
         """
         databases: list[dict[str, Any]] = []
-        for name in self._configs:
+        for name in self.list_databases():
+            if name in self._config_errors:
+                databases.append({
+                    "name": name,
+                    "status": "misconfigured",
+                    "error": self._config_errors[name],
+                })
+                continue
             config = self._configs[name]
             databases.append({
                 "name": name,
                 "host": config.host,
                 "port": config.port,
                 "database": config.database,
+                "status": "ok",
             })
         return databases
 
@@ -138,14 +163,20 @@ class DatabaseRegistry:
     def from_env(cls, env_path: Path | None = None) -> "DatabaseRegistry":
         """Create a registry from environment configuration.
 
-        Reads DB_DATABASES and all DB_* / DB_{PREFIX}_* env vars.
-
-        Args:
-            env_path: Path to .env file.
-
-        Returns:
-            A configured DatabaseRegistry instance.
+        Each alias is loaded independently: an invalid alias is recorded in
+        config_errors (with a value-free message) instead of failing the
+        whole registry. An invalid DB_DATABASES list still raises.
         """
-        configs = load_all_database_configs(env_path)
-        pool_configs = load_all_pool_configs(env_path)
-        return cls(configs=configs, pool_configs=pool_configs)
+        configs: dict[str, DatabaseConfig] = {}
+        pool_configs: dict[str, PoolConfig] = {}
+        errors: dict[str, str] = {}
+        for name in get_database_names(env_path):
+            try:
+                config = load_database_config(name, env_path)
+                pool_config = load_pool_config(name, env_path)
+            except ValueError as e:
+                errors[name] = describe_config_error(e)
+                continue
+            configs[name] = config
+            pool_configs[name] = pool_config
+        return cls(configs=configs, pool_configs=pool_configs, config_errors=errors)
