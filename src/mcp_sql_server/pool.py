@@ -183,6 +183,10 @@ class ConnectionPool:
 
             try:
                 # Try to get from pool first
+                # Short timeout on purpose: release() can retire a connection,
+                # freeing a creation slot without putting anything on the
+                # queue. Waking every 100ms lets a waiter notice that slot
+                # instead of blocking until acquire_timeout.
                 pooled_conn = self._pool.get(timeout=min(remaining, 0.1))
 
                 # Check if connection should be retired

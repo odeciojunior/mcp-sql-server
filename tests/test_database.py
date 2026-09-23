@@ -1,6 +1,5 @@
 """Tests for DatabaseManager."""
 
-import warnings
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
@@ -94,16 +93,12 @@ class TestDatabaseManagerConnect:
             with pytest.raises(pyodbc.Error):
                 db.connect()
 
-    def test_connect_emits_deprecation_warning_when_pooled(self, mock_pyodbc, sample_config):
-        """When pooling is enabled, connect() should emit deprecation warning."""
+    def test_connect_raises_when_pooled(self, mock_pyodbc, sample_config):
+        """connect() is not supported with pooling; get_cursor() is the API."""
         db = DatabaseManager(sample_config, use_pool=True)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with pytest.raises(RuntimeError, match="get_cursor"):
             db.connect()
-            db.close()
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
-            assert "deprecated" in str(w[0].message).lower()
+        db.close()
 
 
 class TestDatabaseManagerIsConnected:
@@ -114,18 +109,34 @@ class TestDatabaseManagerIsConnected:
         assert db._is_connected() is False
 
     def test_is_connected_true_when_valid(self, mock_pyodbc, sample_config):
-        db = DatabaseManager(sample_config)
+        db = DatabaseManager(sample_config, use_pool=False)
         db.connect()
         # Mock the execute to succeed
         db._connection.execute = MagicMock(return_value=True)
         assert db._is_connected() is True
 
     def test_is_connected_false_on_pyodbc_error(self, mock_pyodbc, sample_config):
-        db = DatabaseManager(sample_config)
+        db = DatabaseManager(sample_config, use_pool=False)
         db.connect()
         # Mock execute to raise error
         db._connection.execute = MagicMock(side_effect=pyodbc.Error("Timeout"))
         assert db._is_connected() is False
+
+    def test_is_connected_rolls_back(self, mock_pyodbc, mock_connection, sample_config):
+        db = DatabaseManager(sample_config, use_pool=False)
+        db.connect()
+        mock_connection.rollback.reset_mock()
+        assert db._is_connected() is True
+        mock_connection.rollback.assert_called_once()
+
+    def test_reconnect_closes_dead_connection(self, mock_pyodbc, sample_config):
+        dead = MagicMock()
+        dead.execute.side_effect = pyodbc.Error("gone")
+        db = DatabaseManager(sample_config, use_pool=False)
+        db._connection = dead
+        db.connect()
+        dead.close.assert_called_once()
+        assert db._connection is not dead
 
     def test_is_connected_false_on_attribute_error(self, mock_pyodbc, sample_config):
         db = DatabaseManager(sample_config)

@@ -6,8 +6,8 @@ anyio.to_thread.run_sync(), so tool calls can now execute genuinely in
 parallel. These tests exercise the paths that concurrency newly reaches.
 
 The tool path is DatabaseManager.get_cursor() -> ConnectionPool.connection(),
-which is lock-protected. DatabaseManager.connect() is not, but it is deprecated
-when pooling is enabled and is not on the tool path -- see its docstring.
+which is lock-protected. DatabaseManager.connect() raises when pooling is
+enabled, so it is not reachable from tools.
 """
 
 import threading

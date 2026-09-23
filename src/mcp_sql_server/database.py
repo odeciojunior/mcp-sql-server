@@ -1,7 +1,6 @@
 """Database connection management."""
 
 import logging
-import warnings
 from contextlib import contextmanager
 from typing import Any, Generator
 
@@ -54,55 +53,24 @@ class DatabaseManager:
         return self._pool
 
     def connect(self) -> pyodbc.Connection:
-        """Establish database connection.
+        """Return the non-pooled connection, opening or reopening it as needed.
 
-        DEPRECATED: When pooling is enabled (the default), this method emits a
-        deprecation warning. Use get_cursor() context manager instead for proper
-        connection lifecycle management with automatic cleanup and pool release.
+        Only valid when pooling is disabled. With pooling, use get_cursor(),
+        which acquires and releases pool connections safely.
 
-        When pooling is disabled:
-            Creates a new connection or returns an existing valid connection.
+        Not thread-safe: it mutates `_connection` without a lock. Non-pooled
+        mode is not used on any tool path.
 
-        When pooling is enabled:
-            Acquires a connection from the pool. The caller is responsible for
-            calling close() or using get_cursor() instead to ensure the connection
-            is properly released back to the pool.
-
-        Warning:
-            This method is NOT thread-safe: it mutates the shared instance
-            attributes `_connection` and `_current_pooled_conn` without a lock.
-            Under mcp 2.x, synchronous tool handlers run in worker threads and
-            may execute concurrently, so calling this from more than one thread
-            can interleave and lose a connection. Use get_cursor() instead --
-            it delegates to the pool, which is lock-protected, and is the path
-            every tool takes.
-
-        Returns:
-            A pyodbc.Connection object.
-
-        Example:
-            # Preferred approach (works with both pooling modes, thread-safe):
-            with db.get_cursor() as cursor:
-                cursor.execute("SELECT 1")
-
-            # Legacy approach (deprecated with pooling):
-            conn = db.connect()  # Emits DeprecationWarning if pooling enabled
+        Raises:
+            RuntimeError: if pooling is enabled.
         """
         if self._use_pool:
-            warnings.warn(
-                "connect() is deprecated when pooling is enabled. Use get_cursor() instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            raise RuntimeError(
+                "connect() is not supported when pooling is enabled; use get_cursor()"
             )
-            # Still provide a connection for backward compat
-            pool = self._get_pool()
-            pooled_conn = pool.acquire()
-            # Store reference so release can happen later
-            self._connection = pooled_conn.connection
-            self._current_pooled_conn = pooled_conn
-            return self._connection
 
         if self._connection is None or not self._is_connected():
+            self._drop_connection()
             self._connection = pyodbc.connect(
                 self.config.get_connection_string(),
                 timeout=self.config.connection_timeout,
@@ -111,11 +79,12 @@ class DatabaseManager:
         return self._connection
 
     def _is_connected(self) -> bool:
-        """Check if connection is still valid."""
+        """Check if the connection is still valid (rolls back the probe)."""
         if self._connection is None:
             return False
         try:
             self._connection.execute("SELECT 1")
+            self._connection.rollback()
             return True
         except (pyodbc.Error, AttributeError):
             return False

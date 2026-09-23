@@ -102,7 +102,12 @@ class DatabaseRegistry:
         return databases
 
     def close(self) -> None:
-        """Close all DatabaseManager instances and their pools."""
+        """Close all DatabaseManager instances and their pools.
+
+        Shutdown path: every manager is closed even if one fails. Failures are
+        logged, not raised, so one bad pool cannot leave the others open.
+        Use close_database() to close one database and see its error.
+        """
         with self._lock:
             for name, manager in self._managers.items():
                 try:
