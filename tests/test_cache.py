@@ -298,3 +298,40 @@ class TestCacheIsolationByDatabase:
         my_func(database="db1")
 
         assert call_count == 1
+
+
+class TestCacheKeys:
+    def test_colon_in_args_does_not_collide(self):
+        invalidate_metadata_cache()
+        calls = []
+
+        @cached(ttl=60, key_prefix="collide")
+        def f(*args):
+            calls.append(args)
+            return args
+
+        assert f("a", "b") == ("a", "b")
+        assert f("a:b") == ("a:b",)
+        assert len(calls) == 2
+
+    def test_positional_and_keyword_share_entry(self):
+        invalidate_metadata_cache()
+        calls = []
+
+        @cached(ttl=60, key_prefix="bind")
+        def f(table, schema="dbo"):
+            calls.append((table, schema))
+            return table
+
+        f("x", "dbo")
+        f("x", schema="dbo")
+        f("x")
+        assert len(calls) == 1
+
+
+def test_package_exports_removed():
+    import mcp_sql_server.resources as resources
+    import mcp_sql_server.tools as tools
+
+    assert not hasattr(tools, "ALL_TOOLS")
+    assert not hasattr(resources, "ALL_RESOURCES")

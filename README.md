@@ -703,7 +703,7 @@ Schema metadata queries (`list_tables`, `describe_table`, `list_procedures`) are
 
 - Thread-safe get/set/invalidate/clear operations via `threading.Lock`
 - Automatic expiration on access (lazy cleanup)
-- `@cached` decorator for transparent function-level caching with key generation from arguments
+- `@cached` decorator for transparent function-level caching; keys bind arguments to the function signature, so positional and keyword calls share an entry
 - Global `invalidate_metadata_cache()` to clear all cached entries
 - `cleanup_expired()` for bulk removal of stale entries
 - `stats()` method returning total, valid, and expired entry counts
@@ -813,14 +813,14 @@ pyproject.toml                             # Package metadata, dependencies, myp
 |       +-- logging_config.py              # Structured/standard formatters, request IDs
 |       +-- utils.py                       # Lazy import helpers (circular dep avoidance)
 |       +-- tools/
-|       |   +-- __init__.py                # Tool exports (ALL_TOOLS)
+|       |   +-- __init__.py                # Tool exports
 |       |   +-- query_execution.py         # execute_query, execute_statement, execute_query_file
 |       |   +-- schema_discovery.py        # list_tables, describe_table
 |       |   +-- object_definitions.py      # get_view_definition, get_function_definition
 |       |   +-- stored_procedures.py       # list_procedures, execute_procedure
 |       |   +-- registry_tools.py          # list_databases
 |       +-- resources/
-|           +-- __init__.py                # Resource exports (ALL_RESOURCES)
+|           +-- __init__.py                # Resource exports
 |           +-- database_info.py           # tables, db info, functions, pool stats, databases
 +-- tests/
     +-- conftest.py                        # Shared fixtures
