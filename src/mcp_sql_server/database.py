@@ -137,14 +137,15 @@ class DatabaseManager:
                 try:
                     yield cursor
                 except Exception as e:
-                    if isinstance(e, SessionStateError):
-                        pooled_conn.invalid = True
                     self._close_cursor(cursor)
                     closed = True
-                    try:
-                        pooled_conn.connection.rollback()
-                    except Exception:
-                        logger.debug("Rollback failed during error handling")
+                    if isinstance(e, SessionStateError):
+                        pooled_conn.invalid = True
+                    else:
+                        try:
+                            pooled_conn.connection.rollback()
+                        except Exception:
+                            logger.debug("Rollback failed during error handling")
                     if isinstance(e, pyodbc.Error):
                         logger.error(f"Database error: {e}")
                     raise
@@ -208,14 +209,27 @@ class DatabaseManager:
                 ROWCOUNT would also limit DML inside them.
 
         Raises:
-            SessionStateError: the session could not be reset afterwards; the
-                connection is retired.
+            SessionStateError: the session could not be reset afterwards, or
+                the session's database changed; the connection is retired.
         """
         if server_limit and max_rows is None:
             raise ValueError("server_limit requires max_rows")
+        if max_rows is not None and max_rows < 1:
+            raise ValueError("max_rows must be at least 1")
 
         with self.get_cursor() as cursor:
+            expected_db: str | None = None
             if server_limit:
+                # Read the pre-query database name on the same cursor/connection
+                # so the post-query check is case- and collation-consistent,
+                # rather than comparing against the configured name (DB_NAME()
+                # returns the name as stored in sys.databases, which may differ
+                # in case from a case-insensitively matched DATABASE= setting).
+                # No session state has changed yet, so let failures here
+                # propagate as ordinary pyodbc.Error.
+                cursor.execute("SELECT DB_NAME()")
+                row = cursor.fetchone()
+                expected_db = row[0] if row is not None else None
                 # Literal int, not a parameter: a parameterized SET runs inside
                 # sp_executesql and reverts when that call returns.
                 cursor.execute(f"SET ROWCOUNT {int(max_rows or 0)}")
@@ -233,10 +247,10 @@ class DatabaseManager:
                 return [dict(zip(columns, row)) for row in rows]
             finally:
                 if server_limit:
-                    self._reset_session(cursor)
+                    self._reset_session(cursor, expected_db)
 
-    def _reset_session(self, cursor: pyodbc.Cursor) -> None:
-        """Undo SET ROWCOUNT and confirm the session is still on our database."""
+    def _reset_session(self, cursor: pyodbc.Cursor, expected_db: str | None) -> None:
+        """Undo SET ROWCOUNT and confirm the session is still on the same database."""
         try:
             cursor.cancel()
             cursor.execute("SET ROWCOUNT 0")
@@ -244,7 +258,7 @@ class DatabaseManager:
             row = cursor.fetchone()
         except pyodbc.Error as e:
             raise SessionStateError("could not reset session state") from e
-        if row is None or row[0] != self.config.database:
+        if row is None or row[0] != expected_db:
             raise SessionStateError("session database changed")
 
     def execute_statement(self, sql: str, params: tuple[Any, ...] | None = None) -> int:

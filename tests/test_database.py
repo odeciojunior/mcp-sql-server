@@ -417,6 +417,7 @@ class TestExecuteQueryRowLimit:
         assert len(rows) == 2
         executed = [c.args for c in mock_cursor.execute.call_args_list]
         assert executed == [
+            ("SELECT DB_NAME()",),
             ("SET ROWCOUNT 2",),
             ("SELECT * FROM t WHERE a = ?", ("x",)),
             ("SET ROWCOUNT 0",),
@@ -450,13 +451,13 @@ class TestExecuteQueryRowLimit:
             db.execute_query("SELECT 1", max_rows=5, server_limit=True)
 
     def test_changed_database_raises_session_state_error(self, mock_pyodbc, mock_cursor, sample_config):
-        mock_cursor.fetchone.return_value = ("master",)
+        mock_cursor.fetchone.side_effect = [("test-db",), ("master",)]
         db = DatabaseManager(sample_config, use_pool=False)
         with pytest.raises(SessionStateError, match="database changed"):
             db.execute_query("SELECT 1", max_rows=5, server_limit=True)
 
     def test_non_pooled_session_error_drops_connection(self, mock_pyodbc, mock_cursor, mock_connection, sample_config):
-        mock_cursor.fetchone.return_value = ("master",)
+        mock_cursor.fetchone.side_effect = [("test-db",), ("master",)]
         db = DatabaseManager(sample_config, use_pool=False)
         with pytest.raises(SessionStateError):
             db.execute_query("SELECT 1", max_rows=5, server_limit=True)
@@ -464,13 +465,27 @@ class TestExecuteQueryRowLimit:
         mock_connection.close.assert_called()
 
     def test_pooled_session_error_retires_connection(self, mock_pyodbc, mock_cursor, mock_connection, sample_config):
-        mock_cursor.fetchone.return_value = ("master",)
+        mock_cursor.fetchone.side_effect = [("test-db",), ("master",)]
         db = DatabaseManager(sample_config)
         with pytest.raises(SessionStateError):
             db.execute_query("SELECT 1", max_rows=5, server_limit=True)
         assert db._get_pool().available == 0
         mock_connection.close.assert_called()
         db.close()
+
+    def test_database_case_mismatch_is_not_an_error(self, mock_pyodbc, mock_cursor, sample_config):
+        # sample_config.database is "test-db"; DB_NAME() may report different
+        # casing than DATABASE= in the connection string (case-insensitive
+        # match). Compare against the pre-query DB_NAME(), not the config.
+        mock_cursor.fetchone.side_effect = [("TEST-DB",), ("TEST-DB",)]
+        db = DatabaseManager(sample_config, use_pool=False)
+        rows = db.execute_query("SELECT 1", max_rows=5, server_limit=True)
+        assert len(rows) == 3
+
+    def test_max_rows_below_one_raises_value_error(self, mock_pyodbc, sample_config):
+        db = DatabaseManager(sample_config, use_pool=False)
+        with pytest.raises(ValueError, match="max_rows"):
+            db.execute_query("SELECT 1", max_rows=0)
 
 
 class TestGetCursorErrorOrdering:
