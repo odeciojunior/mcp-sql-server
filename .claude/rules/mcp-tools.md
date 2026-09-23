@@ -40,6 +40,14 @@ All tools return consistent response structures:
     "success": True
 }
 
+# Procedure success
+{
+    "success": True,
+    "results": [{"col1": value}, ...],
+    "row_count": 10,
+    "truncated": False  # True if more than 10,000 rows existed
+}
+
 # Error
 {
     "error": "Error message here"

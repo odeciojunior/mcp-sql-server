@@ -14,7 +14,7 @@ A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server
 - **Structured Logging** in JSON or text format with request correlation IDs
 - **Error Sanitization** that redacts IPs, credentials, and connection details from error messages
 - **Strict Type Safety** with full mypy strict mode compliance
-- **337 Tests** at 85%+ code coverage
+- **Comprehensive test suite** at 85%+ code coverage (no live database required)
 
 ## Architecture Overview
 
@@ -310,6 +310,21 @@ There are two ways to provide database credentials to the server:
 ## Configuration
 
 Copy `.env.example` to `.env` at the repository root and configure your database connection.
+
+### Configuration Sources and Precedence
+
+The default database can be configured two ways:
+
+- `DB_*` variables, from the MCP client's `env` block or the `.env` file
+- `SQL_SERVER_*` variables (`SQL_SERVER_HOST`, `SQL_SERVER_PORT`, `SQL_SERVER_USER`, `SQL_SERVER_PASSWORD`, `SQL_SERVER_DATABASE`, `SQL_SERVER_DRIVER`, `SQL_SERVER_ENCRYPT`, `SQL_SERVER_TRUST_CERT`), typically set in `.claude/settings.local.json` for Claude Code
+
+Precedence, highest first:
+
+1. `DB_*` set in the process environment (e.g. by the MCP client)
+2. `SQL_SERVER_*`
+3. `DB_*` from `.env`
+
+Named databases (`DB_{ALIAS}_*`) do not read `SQL_SERVER_*`.
 
 ### Database Connection
 
@@ -745,7 +760,7 @@ Common SQL Server errors are automatically simplified (e.g., `"Invalid object na
 
 ## Testing
 
-The test suite contains 369 tests covering all modules.
+The test suite covers all modules with mocked database connections; run it to see the current count.
 
 ```bash
 # Run all tests
@@ -773,7 +788,13 @@ The test suite contains 369 tests covering all modules.
 | `test_registry.py` | `DatabaseRegistry` lazy init, get/close, `from_env()` |
 | `test_security.py` | SQL validation, blocked keywords, identifier checks |
 | `test_cache.py` | TTL cache operations, expiry, `@cached` decorator, thread safety |
-| `test_inject_top_clause.py` | TOP clause injection for server-side limiting |
+| `test_server_registration.py` | MCP SDK registration surface (tool/resource names, schemas) |
+| `test_concurrency.py` | Parallel pool/registry access and per-call request IDs |
+| `test_sql_lexer.py` | T-SQL tokenizer: strings, identifiers, comments, depth |
+| `test_audit.py` | Masked SQL previews and query-shape hashes |
+| `test_errors.py` | Error sanitization and value redaction |
+| `test_logging_config.py` | Text/JSON formats, request ID propagation |
+| `test_utils.py` | Lazy server accessors |
 | `test_query_dir.py` | Query directory resolution and file loading |
 | `conftest.py` | Shared pytest fixtures (mock database, config objects) |
 
@@ -832,7 +853,13 @@ pyproject.toml                             # Package metadata, dependencies, myp
     +-- test_registry.py                   # DatabaseRegistry tests
     +-- test_security.py                   # Security validation tests
     +-- test_cache.py                      # TTLCache tests
-    +-- test_inject_top_clause.py          # TOP clause injection tests
+    +-- test_server_registration.py        # MCP registration surface tests
+    +-- test_concurrency.py                # Thread-safety tests
+    +-- test_sql_lexer.py                  # Tokenizer tests
+    +-- test_audit.py                      # Audit masking tests
+    +-- test_errors.py                     # Error sanitization tests
+    +-- test_logging_config.py             # Logging tests
+    +-- test_utils.py                      # Lazy accessor tests
     +-- test_query_dir.py                  # Query directory tests
 ```
 

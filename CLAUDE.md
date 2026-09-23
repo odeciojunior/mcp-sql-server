@@ -150,7 +150,7 @@ Validation tokenizes SQL (`sql_lexer.py`); strings, quoted identifiers, and comm
 
 ## Testing
 
-369 tests with 85%+ coverage. Tests use mocked database connections (no live DB required).
+Comprehensive suite with 85%+ coverage. Tests use mocked database connections (no live DB required).
 
 Key test files:
 - `test_server.py` - Tool and resource integration tests
@@ -164,6 +164,11 @@ Key test files:
 - `test_errors.py` - Error hierarchy and sanitization
 - `test_server_registration.py` - MCP SDK registration surface (tool/resource names, schemas)
 - `test_concurrency.py` - Parallel pool/registry access (mcp 2.x runs sync handlers in threads)
+- `test_config_multi.py` - Multi-database config and alias parsing
+- `test_query_dir.py` - Query directory resolution
+- `test_sql_lexer.py` - T-SQL tokenizer
+- `test_logging_config.py` - Log formats and request IDs
+- `test_utils.py` - Lazy server accessors
 
 ## Type Safety
 
