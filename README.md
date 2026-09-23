@@ -650,7 +650,7 @@ All queries and statements are tokenized before execution. Keywords inside strin
 | Dynamic SQL / control flow | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD` |
 | Legacy text/image | `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
 | Side effects | `NEXT VALUE FOR`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION` |
-| File readers | `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file` |
+| File readers | `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
 
 **Blocked Prefixes:** `xp_*`, `sp_*` (system stored procedures)
 

@@ -55,6 +55,8 @@ BLOCKED_FUNCTIONS: set[str] = {
     "FN_XE_FILE_TARGET_READ_FILE",
     "FN_TRACE_GETTABLE",
     "FN_GET_AUDIT_FILE",
+    "DM_OS_FILE_EXISTS",
+    "DM_OS_ENUMERATE_FILESYSTEM",
 }
 
 # Allowed statement types for execute_query (read-only)
@@ -85,12 +87,32 @@ def _unquote_identifier(tok: Token) -> str:
     return inner.upper()
 
 
+def _structural_word(tok: Token) -> str:
+    """Uppercase text for a WORD token, but only when it's pure ASCII.
+
+    str.upper() maps some non-ASCII letters onto ASCII keywords (e.g.
+    'unıon'.upper() == 'UNION', Turkish dotless i), which would let a
+    structural/allowed-keyword check (SELECT, UNION, SET, ...) be fooled
+    into treating an ordinary identifier as the keyword and mis-parsing
+    statement structure. Returns "" (never equal to a real keyword) for
+    non-ASCII text so those checks fail closed instead of matching.
+    Blocked-word checks (BLOCKED_KEYWORDS, STATEMENT_WORDS, ...) intentionally
+    keep using tok.upper directly, without this restriction, so they still
+    catch a blocked keyword spelled with non-ASCII letters.
+    """
+    return tok.upper if tok.text.isascii() else ""
+
+
 def _follows_set_operator(tokens: list[Token], idx: int) -> bool:
     """True if tokens[idx] is preceded by UNION/EXCEPT/INTERSECT (optionally + ALL)."""
     j = idx - 1
-    if j >= 0 and tokens[j].kind is TokenKind.WORD and tokens[j].upper == "ALL":
+    if j >= 0 and tokens[j].kind is TokenKind.WORD and _structural_word(tokens[j]) == "ALL":
         j -= 1
-    return j >= 0 and tokens[j].kind is TokenKind.WORD and tokens[j].upper in SET_OPERATORS
+    return (
+        j >= 0
+        and tokens[j].kind is TokenKind.WORD
+        and _structural_word(tokens[j]) in SET_OPERATORS
+    )
 
 
 def _check_read_query(tokens: list[Token]) -> tuple[bool, str]:
@@ -101,7 +123,7 @@ def _check_read_query(tokens: list[Token]) -> tuple[bool, str]:
         word = tok.upper
         if word in READ_ONLY_FORBIDDEN:
             return False, f"Data modification not allowed in read-only query: {word}"
-        if word == "SELECT" and tok.depth == 0:
+        if _structural_word(tok) == "SELECT" and tok.depth == 0:
             if select_seen and not _follows_set_operator(tokens, idx):
                 return False, _MULTIPLE
             select_seen = True
@@ -119,23 +141,24 @@ def _check_modify_statement(tokens: list[Token]) -> tuple[bool, str]:
         if idx == 0 or tok.kind is not TokenKind.WORD:
             continue
         word = tok.upper
+        struct_word = _structural_word(tok)
         if word in _DML_WORDS and tok.depth == 0:
             return False, _MULTIPLE
-        if word == "SET":
+        if struct_word == "SET":
             if first != "UPDATE" or set_seen or tok.depth != 0:
                 return False, _MULTIPLE
             set_seen = True
-        elif word in ("VALUES", "DEFAULT") and tok.depth == 0:
+        elif struct_word in ("VALUES", "DEFAULT") and tok.depth == 0:
             values_seen = True
-        elif word == "SELECT" and tok.depth == 0:
+        elif struct_word == "SELECT" and tok.depth == 0:
             if first != "INSERT" or values_seen:
                 return False, _MULTIPLE
             if select_seen and not _follows_set_operator(tokens, idx):
                 return False, _MULTIPLE
             select_seen = True
-        elif word == "OUTPUT" and tok.depth == 0:
+        elif struct_word == "OUTPUT" and tok.depth == 0:
             output_seen = True
-        elif word == "INTO":
+        elif struct_word == "INTO":
             if idx == 1 and first == "INSERT":
                 continue
             if output_seen and not output_into_used and tok.depth == 0:
@@ -212,9 +235,14 @@ def validate_query(sql: str, allow_modifications: bool = False) -> tuple[bool, s
 
     first = tokens[0]
     allowed = ALLOWED_STATEMENT_KEYWORDS if allow_modifications else ALLOWED_QUERY_KEYWORDS
-    first_text = first.upper if first.kind is TokenKind.WORD else first.text
-    if first.kind is not TokenKind.WORD or first_text not in allowed:
-        return False, f"Statement type '{first_text}' not allowed"
+    first_struct = _structural_word(first) if first.kind is TokenKind.WORD else ""
+    if first.kind is not TokenKind.WORD or first_struct not in allowed:
+        # When the first token isn't a WORD, echo its kind, not its raw
+        # text: that token can be a string literal or other data value, and
+        # echoing it back in the error would leak that value into
+        # logs/responses.
+        label = first.upper if first.kind is TokenKind.WORD else first.kind.value
+        return False, f"Statement type '{label}' not allowed"
 
     if allow_modifications:
         return _check_modify_statement(tokens)

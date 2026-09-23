@@ -258,6 +258,8 @@ READ_REJECTED = [
     ("SELECT 1 ADD SIGNATURE TO p BY CERTIFICATE c", "ADD"),
     ("-- only a comment", "empty"),
     ("(SELECT 1)", "Statement type"),
+    (r"SELECT * FROM sys.dm_os_file_exists('\\h\s\x')", "DM_OS_FILE_EXISTS"),
+    (r"SELECT * FROM sys.dm_os_enumerate_filesystem('\\h\s', '*')", "DM_OS_ENUMERATE_FILESYSTEM"),
     ("SELECT 1eEXEC('select 1')", "EXEC"),
     ("SELECT 1eDELETE FROM t", "DELETE"),
     ("SELECT 1.eWAITFOR DELAY '00:00:05'", "WAITFOR"),
@@ -313,6 +315,22 @@ class TestTokenValidationModifyMode:
         valid, error = validate_query(sql, allow_modifications=True)
         assert not valid
         assert fragment.lower() in error.lower()
+
+
+class TestNonAsciiKeywordBypass:
+    def test_dotless_i_union_is_rejected(self):
+        """F5: 'unıon'.upper() == 'UNION' in Python; must not be treated as UNION."""
+        valid, error = validate_query("SELECT 1 unıon SELECT 2")
+        assert not valid
+        assert "multiple statements" in error.lower()
+
+
+class TestStatementTypeErrorDoesNotLeakLiteral:
+    def test_string_literal_not_echoed(self):
+        """F6: the error names the token kind, not the literal's raw text."""
+        valid, error = validate_query("'123.456.789-00' x")
+        assert not valid
+        assert "123" not in error
 
 
 class TestIdentifierUnaffectedByStatementWords:
