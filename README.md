@@ -344,6 +344,8 @@ Copy `.env.example` to `.env` at the repository root and configure your database
 | `LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LOG_FORMAT` | `text` | Output format (`text` or `json`) |
 
+`LOG_LEVEL` and `LOG_FORMAT` are read from the process environment first, then from `.env`.
+
 ### Query Files
 
 | Variable | Default | Description |
@@ -366,6 +368,10 @@ DB_POOL_MAX_SIZE=10
 LOG_LEVEL=INFO
 LOG_FORMAT=text
 ```
+
+### Startup Validation
+
+On startup the server checks every database's configuration and logs problems at `ERROR` (alias, field, and error type only; never values). The server still starts: a misconfigured database returns its configuration error when a tool targets it, and the other databases keep working.
 
 ## Multi-Database Support
 
@@ -719,10 +725,10 @@ Previews replace every string and numeric literal with `?` and drop comments (`W
 
 Two output formats controlled by `LOG_FORMAT`:
 
-- **`text`** (default): `2024-01-15 10:30:00 - module.name - INFO - message`
-- **`json`**: `{"timestamp": "...", "level": "INFO", "logger": "...", "message": "...", "request_id": "..."}`
+- **`text`** (default): `2024-01-15 10:30:00 - module.name - INFO - [3f2a9c1b7d4e] message`
+- **`json`**: `{"timestamp": "...", "level": "INFO", "logger": "...", "message": "...", "request_id": "3f2a9c1b7d4e"}`
 
-Request correlation IDs are tracked via `contextvars.ContextVar` for tracing operations across components.
+Every tool call gets a 12-character `request_id`, so all log lines from one call (including audit events) share it. Lines outside a tool call show `-` (text) or omit the field (JSON).
 
 ### Error Handling
 

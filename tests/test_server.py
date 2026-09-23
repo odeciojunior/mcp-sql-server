@@ -1,5 +1,6 @@
 """Tests for MCP server tools and resources."""
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -31,6 +32,16 @@ from mcp_sql_server.resources.database_info import (
 )
 from mcp_sql_server.tools import query_execution, schema_discovery, object_definitions, stored_procedures
 from mcp_sql_server.resources import database_info
+
+
+@pytest.fixture
+def default_registry():
+    from mcp_sql_server.config import DatabaseConfig
+    from mcp_sql_server.registry import DatabaseRegistry
+
+    return DatabaseRegistry(
+        configs={"default": DatabaseConfig(host="h", user="u", password="p", database="d")}
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -1307,3 +1318,75 @@ class TestRowLimitWiring:
             result = execute_procedure("GetUserById", params={"UserId": 1})
 
             assert result["truncated"] is False
+
+
+class TestMainStartup:
+    @pytest.fixture(autouse=True)
+    def _reset_registry(self):
+        server._registry = None
+        yield
+        if server._registry is not None:
+            server._registry.close()
+        server._registry = None
+
+    def _run_main(self, registry=None, get_registry_error=None, dotenv=None):
+        calls = []
+        get_registry = MagicMock(return_value=registry, side_effect=get_registry_error)
+        with patch.object(server, "dotenv_values", return_value=dotenv or {}), \
+             patch.object(server, "setup_logging", side_effect=lambda *a: calls.append(("setup_logging", a))), \
+             patch.object(server, "get_registry", get_registry), \
+             patch.object(server.mcp, "run", side_effect=lambda **kw: calls.append(("run", kw))):
+            server.main()
+        return calls
+
+    def test_order_and_transport(self, default_registry):
+        calls = self._run_main(registry=default_registry)
+        assert [c[0] for c in calls] == ["setup_logging", "run"]
+        assert calls[1][1] == {"transport": "stdio"}
+
+    def test_logging_vars_from_dotenv_when_not_in_env(self, default_registry, monkeypatch):
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        calls = self._run_main(registry=default_registry, dotenv={"LOG_LEVEL": "DEBUG", "LOG_FORMAT": "json"})
+        assert calls[0][1] == ("DEBUG", "json")
+
+    def test_process_env_beats_dotenv(self, default_registry, monkeypatch):
+        monkeypatch.setenv("LOG_LEVEL", "ERROR")
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        calls = self._run_main(registry=default_registry, dotenv={"LOG_LEVEL": "DEBUG"})
+        assert calls[0][1] == ("ERROR", None)
+
+    def test_main_does_not_mutate_environ(self, default_registry, monkeypatch):
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        self._run_main(registry=default_registry, dotenv={"LOG_LEVEL": "DEBUG"})
+        assert "LOG_LEVEL" not in os.environ
+
+    def test_config_errors_logged_without_values_and_server_starts(self, caplog):
+        from mcp_sql_server.config import DatabaseConfig
+        from mcp_sql_server.registry import DatabaseRegistry
+
+        registry = DatabaseRegistry(
+            configs={"default": DatabaseConfig(host="h", user="u", password="p", database="d")},
+            config_errors={"archive": "password: string_too_short"},
+        )
+        with caplog.at_level(logging.ERROR):
+            calls = self._run_main(registry=registry)
+        assert "Database 'archive' configuration invalid: password: string_too_short" in caplog.text
+        assert calls[-1][0] == "run"
+
+    def test_invalid_db_databases_logged_and_server_starts(self, caplog):
+        with caplog.at_level(logging.ERROR):
+            calls = self._run_main(get_registry_error=ValueError("Invalid database alias '1x'"))
+        assert "Invalid database alias '1x'" in caplog.text
+        assert calls[-1][0] == "run"
+
+    def test_no_import_time_logging_config(self):
+        import inspect as _inspect
+
+        assert "basicConfig" not in _inspect.getsource(server)
+
+    def test_every_tool_is_wrapped(self):
+        import inspect as _inspect
+
+        source = _inspect.getsource(server)
+        assert source.count("@mcp.tool()\n@with_request_id") == 10

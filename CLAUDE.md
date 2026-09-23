@@ -97,6 +97,8 @@ Copy `.env.example` to `.env` and fill in your values. Required: `DB_HOST`, `DB_
 
 **Warning:** `.env` contains credentials and is gitignored. Use `.env.example` as a template.
 
+At startup each database config is validated and errors are logged (no values); the server still starts, and only calls to a misconfigured database fail.
+
 ### Multi-Database Support
 
 ```env

@@ -199,3 +199,24 @@ class TestRegistryConcurrentGet:
         errors = _run_concurrently(worker)
         assert errors == []
         registry.close()
+
+
+class TestRequestIdIsolation:
+    def test_concurrent_calls_get_distinct_ids(self):
+        from mcp_sql_server.logging_config import request_id_var, with_request_id
+
+        seen: list[str | None] = []
+        seen_lock = threading.Lock()
+        barrier = threading.Barrier(WORKERS)
+
+        @with_request_id
+        def tool() -> None:
+            barrier.wait(timeout=10)  # all calls are in flight at once
+            with seen_lock:
+                seen.append(request_id_var.get())
+
+        errors = _run_concurrently(tool)
+        assert errors == []
+        assert len(seen) == WORKERS
+        assert None not in seen
+        assert len(set(seen)) == WORKERS
