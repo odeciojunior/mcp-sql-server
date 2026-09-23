@@ -4,3 +4,11 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+
+# Test and type-check artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
+.mypy_cache/
