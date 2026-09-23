@@ -6,7 +6,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from pydantic import BaseModel, Field, ValidationError
 
 # Valid database alias pattern: letters, digits, underscore; must start with letter; max 64 chars
@@ -32,6 +32,21 @@ def _parse_float(raw: str, name: str) -> float:
         raise ValueError(f"{name} must be a number") from None
 
 
+def _read_dotenv(env_path: Path | None) -> dict[str, str]:
+    """Return the .env file's values without touching os.environ.
+
+    Loading .env into os.environ would make file values indistinguishable
+    from explicitly set ones and break the documented precedence.
+    """
+    values = dotenv_values(env_path or DEFAULT_ENV_PATH)
+    return {k: v for k, v in values.items() if v is not None}
+
+
+def _env(name: str, file_values: dict[str, str], default: str = "") -> str:
+    """Process env first, then the .env file, then default (empty counts as unset)."""
+    return os.environ.get(name) or file_values.get(name) or default
+
+
 class PoolConfig(BaseModel):
     """Connection pool configuration from environment variables."""
 
@@ -51,22 +66,24 @@ class PoolConfig(BaseModel):
     @classmethod
     def from_env(cls, env_path: Path | None = None) -> "PoolConfig":
         """Load pool configuration from environment variables."""
-        if env_path is None:
-            env_path = DEFAULT_ENV_PATH
-
-        load_dotenv(env_path)
+        file_values = _read_dotenv(env_path)
 
         return cls(
-            min_size=_parse_int(os.getenv("DB_POOL_MIN_SIZE", "1"), "DB_POOL_MIN_SIZE"),
-            max_size=_parse_int(os.getenv("DB_POOL_MAX_SIZE", "5"), "DB_POOL_MAX_SIZE"),
-            idle_timeout=_parse_int(os.getenv("DB_POOL_IDLE_TIMEOUT", "300"), "DB_POOL_IDLE_TIMEOUT"),
+            min_size=_parse_int(_env("DB_POOL_MIN_SIZE", file_values, "1"), "DB_POOL_MIN_SIZE"),
+            max_size=_parse_int(_env("DB_POOL_MAX_SIZE", file_values, "5"), "DB_POOL_MAX_SIZE"),
+            idle_timeout=_parse_int(
+                _env("DB_POOL_IDLE_TIMEOUT", file_values, "300"), "DB_POOL_IDLE_TIMEOUT"
+            ),
             health_check_interval=_parse_int(
-                os.getenv("DB_POOL_HEALTH_CHECK_INTERVAL", "30"), "DB_POOL_HEALTH_CHECK_INTERVAL"
+                _env("DB_POOL_HEALTH_CHECK_INTERVAL", file_values, "30"),
+                "DB_POOL_HEALTH_CHECK_INTERVAL",
             ),
             acquire_timeout=_parse_float(
-                os.getenv("DB_POOL_ACQUIRE_TIMEOUT", "10.0"), "DB_POOL_ACQUIRE_TIMEOUT"
+                _env("DB_POOL_ACQUIRE_TIMEOUT", file_values, "10.0"), "DB_POOL_ACQUIRE_TIMEOUT"
             ),
-            max_lifetime=_parse_int(os.getenv("DB_POOL_MAX_LIFETIME", "3600"), "DB_POOL_MAX_LIFETIME"),
+            max_lifetime=_parse_int(
+                _env("DB_POOL_MAX_LIFETIME", file_values, "3600"), "DB_POOL_MAX_LIFETIME"
+            ),
         )
 
     @classmethod
@@ -77,10 +94,7 @@ class PoolConfig(BaseModel):
             prefix: Uppercase prefix for env vars (e.g. "ANALYTICS" reads DB_ANALYTICS_POOL_*).
             env_path: Path to .env file.
         """
-        if env_path is None:
-            env_path = DEFAULT_ENV_PATH
-
-        load_dotenv(env_path)
+        file_values = _read_dotenv(env_path)
 
         p = prefix.upper()
 
@@ -88,16 +102,20 @@ class PoolConfig(BaseModel):
             return f"DB_{p}_POOL_{suffix}"
 
         return cls(
-            min_size=_parse_int(os.getenv(var("MIN_SIZE"), "1"), var("MIN_SIZE")),
-            max_size=_parse_int(os.getenv(var("MAX_SIZE"), "5"), var("MAX_SIZE")),
-            idle_timeout=_parse_int(os.getenv(var("IDLE_TIMEOUT"), "300"), var("IDLE_TIMEOUT")),
+            min_size=_parse_int(_env(var("MIN_SIZE"), file_values, "1"), var("MIN_SIZE")),
+            max_size=_parse_int(_env(var("MAX_SIZE"), file_values, "5"), var("MAX_SIZE")),
+            idle_timeout=_parse_int(
+                _env(var("IDLE_TIMEOUT"), file_values, "300"), var("IDLE_TIMEOUT")
+            ),
             health_check_interval=_parse_int(
-                os.getenv(var("HEALTH_CHECK_INTERVAL"), "30"), var("HEALTH_CHECK_INTERVAL")
+                _env(var("HEALTH_CHECK_INTERVAL"), file_values, "30"), var("HEALTH_CHECK_INTERVAL")
             ),
             acquire_timeout=_parse_float(
-                os.getenv(var("ACQUIRE_TIMEOUT"), "10.0"), var("ACQUIRE_TIMEOUT")
+                _env(var("ACQUIRE_TIMEOUT"), file_values, "10.0"), var("ACQUIRE_TIMEOUT")
             ),
-            max_lifetime=_parse_int(os.getenv(var("MAX_LIFETIME"), "3600"), var("MAX_LIFETIME")),
+            max_lifetime=_parse_int(
+                _env(var("MAX_LIFETIME"), file_values, "3600"), var("MAX_LIFETIME")
+            ),
         )
 
     def model_post_init(self, __context: Any) -> None:
@@ -131,31 +149,21 @@ class DatabaseConfig(BaseModel):
 
         Precedence, highest first:
 
-        1. DB_* set in the real process environment. These are explicit
-           configuration -- an MCP client injecting them via .mcp.json, or a
-           caller exporting them deliberately.
-        2. SQL_SERVER_* (injected via .claude/settings.local.json).
-        3. DB_* read from the .env file.
+        1. DB_* set in the process environment (explicit configuration, e.g.
+           an MCP client's env block).
+        2. SQL_SERVER_* (process environment, then .env).
+        3. DB_* from the .env file.
 
-        The process-environment tier matters because load_dotenv() merges .env
-        values into os.environ, after which a DB_* from the file is
-        indistinguishable from one the caller set. Snapshotting first keeps
-        SQL_SERVER_* from silently overriding explicit configuration.
+        The .env file is read with dotenv_values and never merged into
+        os.environ, so file values can never masquerade as explicit ones.
         """
-        if env_path is None:
-            # Look for .env in parent directory (repo root)
-            env_path = DEFAULT_ENV_PATH
-
-        # Capture explicit DB_* vars before .env values are merged in.
-        explicit_db = {k: v for k, v in os.environ.items() if k.startswith("DB_")}
-
-        load_dotenv(env_path)
+        file_values = _read_dotenv(env_path)
 
         def _get(sql_server_key: str, db_key: str, default: str = "") -> str:
-            explicit = explicit_db.get(db_key)
+            explicit = os.environ.get(db_key)
             if explicit:
                 return explicit
-            value = os.getenv(sql_server_key) or os.getenv(db_key)
+            value = _env(sql_server_key, file_values) or file_values.get(db_key)
             return value if value else default
 
         return cls(
@@ -165,8 +173,10 @@ class DatabaseConfig(BaseModel):
             password=_get("SQL_SERVER_PASSWORD", "DB_PASSWORD"),
             database=_get("SQL_SERVER_DATABASE", "DB_NAME"),
             driver=_get("SQL_SERVER_DRIVER", "DB_DRIVER", "ODBC Driver 17 for SQL Server"),
-            connection_timeout=_parse_int(os.getenv("DB_TIMEOUT", "30"), "DB_TIMEOUT"),
-            query_timeout=_parse_int(os.getenv("DB_QUERY_TIMEOUT", "120"), "DB_QUERY_TIMEOUT"),
+            connection_timeout=_parse_int(_env("DB_TIMEOUT", file_values, "30"), "DB_TIMEOUT"),
+            query_timeout=_parse_int(
+                _env("DB_QUERY_TIMEOUT", file_values, "120"), "DB_QUERY_TIMEOUT"
+            ),
             encrypt=_get("SQL_SERVER_ENCRYPT", "DB_ENCRYPT").lower() in ("true", "1", "yes"),
             trust_cert=_get("SQL_SERVER_TRUST_CERT", "DB_TRUST_CERT").lower() in ("true", "1", "yes"),
         )
@@ -179,23 +189,24 @@ class DatabaseConfig(BaseModel):
             prefix: Uppercase prefix for env vars (e.g. "ANALYTICS" reads DB_ANALYTICS_*).
             env_path: Path to .env file.
         """
-        if env_path is None:
-            env_path = DEFAULT_ENV_PATH
-
-        load_dotenv(env_path)
+        file_values = _read_dotenv(env_path)
 
         p = prefix.upper()
         return cls(
-            host=os.getenv(f"DB_{p}_HOST", ""),
-            port=_parse_int(os.getenv(f"DB_{p}_PORT", "1433"), f"DB_{p}_PORT"),
-            user=os.getenv(f"DB_{p}_USER", ""),
-            password=os.getenv(f"DB_{p}_PASSWORD", ""),
-            database=os.getenv(f"DB_{p}_NAME", ""),
-            driver=os.getenv(f"DB_{p}_DRIVER", "ODBC Driver 17 for SQL Server"),
-            connection_timeout=_parse_int(os.getenv(f"DB_{p}_TIMEOUT", "30"), f"DB_{p}_TIMEOUT"),
-            query_timeout=_parse_int(os.getenv(f"DB_{p}_QUERY_TIMEOUT", "120"), f"DB_{p}_QUERY_TIMEOUT"),
-            encrypt=os.getenv(f"DB_{p}_ENCRYPT", "").lower() in ("true", "1", "yes"),
-            trust_cert=os.getenv(f"DB_{p}_TRUST_CERT", "").lower() in ("true", "1", "yes"),
+            host=_env(f"DB_{p}_HOST", file_values),
+            port=_parse_int(_env(f"DB_{p}_PORT", file_values, "1433"), f"DB_{p}_PORT"),
+            user=_env(f"DB_{p}_USER", file_values),
+            password=_env(f"DB_{p}_PASSWORD", file_values),
+            database=_env(f"DB_{p}_NAME", file_values),
+            driver=_env(f"DB_{p}_DRIVER", file_values, "ODBC Driver 17 for SQL Server"),
+            connection_timeout=_parse_int(
+                _env(f"DB_{p}_TIMEOUT", file_values, "30"), f"DB_{p}_TIMEOUT"
+            ),
+            query_timeout=_parse_int(
+                _env(f"DB_{p}_QUERY_TIMEOUT", file_values, "120"), f"DB_{p}_QUERY_TIMEOUT"
+            ),
+            encrypt=_env(f"DB_{p}_ENCRYPT", file_values).lower() in ("true", "1", "yes"),
+            trust_cert=_env(f"DB_{p}_TRUST_CERT", file_values).lower() in ("true", "1", "yes"),
         )
 
     def get_connection_string(self) -> str:
@@ -221,12 +232,8 @@ def get_database_names(env_path: Path | None = None) -> list[str]:
     Returns:
         List starting with "default", followed by any aliases from DB_DATABASES.
     """
-    if env_path is None:
-        env_path = DEFAULT_ENV_PATH
-    load_dotenv(env_path)
-
     names = ["default"]
-    db_databases = os.getenv("DB_DATABASES", "").strip()
+    db_databases = _env("DB_DATABASES", _read_dotenv(env_path)).strip()
     if db_databases:
         for alias in db_databases.split(","):
             alias = alias.strip()
@@ -301,11 +308,7 @@ def get_query_dir() -> Path:
     Returns:
         Path to the query directory.
     """
-    # Load env if not already loaded
-    env_path = DEFAULT_ENV_PATH
-    load_dotenv(env_path)
-
-    query_dir_str = os.getenv("QUERY_DIR")
+    query_dir_str = _env("QUERY_DIR", _read_dotenv(DEFAULT_ENV_PATH))
     if query_dir_str:
         return Path(query_dir_str).resolve()
 
