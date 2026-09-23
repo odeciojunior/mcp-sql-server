@@ -21,6 +21,10 @@ SENSITIVE_PATTERNS = [
         r"(Conversion failed when converting the [\w ]+? value )'(?:[^']|'')*'",
         r"\1'[REDACTED]'",
     ),
+    (
+        r"(The conversion of the [\w ]+? value )'(?:[^']|'')*'",
+        r"\1'[REDACTED]'",
+    ),
     # Database names in errors (optional - may want to keep these)
     # (r"database '([^']+)'", "database '[REDACTED]'"),
 ]

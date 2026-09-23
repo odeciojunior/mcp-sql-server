@@ -35,6 +35,12 @@ class TestValueRedaction:
         assert "abc" not in out
         assert "the varchar value '[REDACTED]' to data type int" in out
 
+    def test_error_248_overflow_value_redacted(self):
+        msg = "The conversion of the varchar value '99999999999' overflowed an int column."
+        out = sanitize_error(msg)
+        assert "99999999999" not in out
+        assert "the varchar value '[REDACTED]' overflowed an int column" in out
+
     def test_object_names_kept(self):
         assert "dbo.Req" in sanitize_error("Invalid object name 'dbo.Req'.")
 
