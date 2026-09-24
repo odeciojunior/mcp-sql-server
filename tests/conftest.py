@@ -25,7 +25,7 @@ def _isolate_from_real_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> G
     monkeypatch.setattr(server_module, "DEFAULT_ENV_PATH", fake_env_path)
 
     for key in list(os.environ.keys()):
-        if key.startswith("SQL_SERVER_"):
+        if key.startswith("SQL_SERVER_") or key.startswith("DB_"):
             monkeypatch.delenv(key, raising=False)
 
     get_query_dir.cache_clear()

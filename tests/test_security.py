@@ -249,6 +249,8 @@ READ_REJECTED = [
     ("SELECT 'unterminated", "Invalid SQL"),
     ("SELECT 1 --\rDELETE FROM t", "DELETE"),
     ("SELECT 1 DECLARE @p int", "DECLARE"),
+    ("SELECT 1e--'\nEXEC('x') --'", "Invalid SQL"),
+    ("SELECT 1e-- \nDELETE FROM t", "Invalid SQL"),
     ("SELECT 1 BEGIN TRAN", "BEGIN"),
     ("SELECT 1 COMMIT", "COMMIT"),
     ("SELECT 1 DENY SELECT ON t TO u", "DENY"),

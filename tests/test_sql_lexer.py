@@ -106,6 +106,20 @@ class TestNumbers:
     def test_non_ascii_digits_are_not_numbers(self):
         assert tokenize("١٢٣")[0].kind is not TokenKind.NUMBER
 
+    def test_malformed_exponent_sign_with_no_digit_raises(self):
+        with pytest.raises(LexError, match="malformed number exponent"):
+            tokenize("SELECT 1e--x")
+
+    def test_malformed_exponent_sign_at_end_raises(self):
+        with pytest.raises(LexError, match="malformed number exponent"):
+            tokenize("1e+")
+
+    def test_exponent_with_digits_after_sign_still_single_token(self):
+        assert kinds("1.5E-3") == [(N, "1.5E-3")]
+
+    def test_exponent_glued_keyword_still_splits(self):
+        assert kinds("1eEXEC") == [(N, "1e"), (W, "EXEC")]
+
 
 class TestWords:
     def test_portuguese_identifier_is_one_word(self):

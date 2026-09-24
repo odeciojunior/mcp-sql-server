@@ -428,6 +428,18 @@ class TestListTablesTool:
             assert result["success"] is False
             assert "bob" not in result["error"]
 
+    def test_list_tables_log_is_sanitized(self, caplog):
+        """F10: the logger.error call itself must not leak raw exception text."""
+        with patch.object(schema_discovery, '_get_db') as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.side_effect = Exception("Login failed for user 'bob'")
+            mock_get_db.return_value = mock_db
+
+            with caplog.at_level(logging.ERROR):
+                list_tables()
+
+            assert "bob" not in caplog.text
+
     def test_list_tables_empty_result(self):
         with patch.object(schema_discovery, '_get_db') as mock_get_db:
             mock_db = MagicMock()

@@ -26,6 +26,11 @@ class TestMaskSql:
     def test_unparseable_returns_none(self):
         assert _mask_sql("SELECT 'open") is None
 
+    def test_malformed_exponent_returns_none(self):
+        """F-recap: '1e--' is ambiguous (T-SQL comment vs bare exponent) and must
+        be refused by the lexer, which makes it unparseable for masking too."""
+        assert _mask_sql("SELECT 1e--'\nEXEC('x') --'") is None
+
 
 class TestPreview:
     def test_truncates_masked(self):

@@ -37,7 +37,7 @@ def list_tables(
         else:
             return _list_tables_cached(None, database=database)
     except Exception as e:
-        logger.error(f"Error listing tables: {e}")
+        logger.error(f"Error listing tables: {sanitize_error(e)}")
         return {"error": sanitize_error(e), "success": False}
 
 
@@ -90,7 +90,7 @@ def describe_table(
     try:
         return _describe_table_cached(table_name, schema, database=database)
     except Exception as e:
-        logger.error(f"Error describing table: {e}")
+        logger.error(f"Error describing table: {sanitize_error(e)}")
         return {"error": sanitize_error(e), "success": False}
 
 

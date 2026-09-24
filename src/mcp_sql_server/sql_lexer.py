@@ -108,6 +108,12 @@ def _scan_number(sql: str, pos: int) -> int:
         # split into NUMBER "1" + WORD "eEXEC").
         i += 1
         if i < n and sql[i] in "+-":
+            # A sign with no digit after it is ambiguous: SQL Server may read
+            # "1e-" followed by "-" as a bare exponent then a minus, or may
+            # read "1e--" as "1e" followed by a "--" comment. We cannot know
+            # which, so refuse rather than silently pick one (fail closed).
+            if i + 1 >= n or sql[i + 1] not in _ASCII_DIGITS:
+                raise LexError("malformed number exponent")
             i += 1
         while i < n and sql[i] in _ASCII_DIGITS:
             i += 1
