@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from ..errors import sanitize_error
 from ..utils import get_db as _get_db, get_registry as _get_registry
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ def resource_database_info(database: str = "default") -> str:
 {info['version']}
 """
     except Exception as e:
-        return f"Error retrieving database information: {e}"
+        return f"Error retrieving database information: {sanitize_error(e)}"
 
     return "Error retrieving database information"
 
@@ -108,7 +109,7 @@ def resource_functions(database: str = "default") -> str:
             lines.append(f"- {func['name']} -> {return_type}")
         return "\n".join(lines)
     except Exception as e:
-        return f"Error listing functions: {e}"
+        return f"Error listing functions: {sanitize_error(e)}"
 
 
 def resource_pool_stats(database: str = "default") -> str:
@@ -184,7 +185,7 @@ def resource_pool_stats(database: str = "default") -> str:
 
         return "\n".join(lines)
     except Exception as e:
-        return f"Error retrieving pool statistics: {e}"
+        return f"Error retrieving pool statistics: {sanitize_error(e)}"
 
 
 def resource_databases() -> str:
@@ -211,4 +212,4 @@ def resource_databases() -> str:
 
         return "\n".join(lines)
     except Exception as e:
-        return f"Error listing databases: {e}"
+        return f"Error listing databases: {sanitize_error(e)}"

@@ -699,6 +699,21 @@ class TestExecuteProcedureTool:
             assert result["success"] is False
             assert "Proc error" in result["error"]
 
+    def test_execute_procedure_runs_read_only(self, mock_pyodbc, mock_connection, sample_config):
+        """D2: execute_procedure runs through the read path (never commits);
+        the pool's release-time reset always rolls back, undoing any writes
+        the procedure made, even with an internal BEGIN TRAN/COMMIT."""
+        from mcp_sql_server.database import DatabaseManager
+
+        real_db = DatabaseManager(sample_config)
+        with patch.object(stored_procedures, '_get_db', return_value=real_db):
+            result = execute_procedure("GetUserById")
+
+        assert result["success"] is True
+        mock_connection.commit.assert_not_called()
+        mock_connection.rollback.assert_called()
+        real_db.close()
+
 
 class TestResourceTables:
     """Tests for sqlserver://tables resource."""
@@ -777,6 +792,17 @@ class TestResourceDatabaseInfo:
             result = resource_database_info()
 
             assert "Error" in result
+
+    def test_resource_database_info_sanitizes_exception(self):
+        """R1: resources must not echo raw exception text back to the caller."""
+        with patch.object(database_info, '_get_db') as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.side_effect = Exception("Login failed for user 'bob'")
+            mock_get_db.return_value = mock_db
+
+            result = resource_database_info()
+
+            assert "bob" not in result
 
     def test_resource_database_info_empty_result(self):
         with patch.object(database_info, '_get_db') as mock_get_db:
