@@ -80,7 +80,7 @@ Add natural language variations of how someone might describe this problem:
 
 Before creating a new lesson, always check for existing coverage:
 
-1. Read `docs/lessons/INDEX.md` and scan for similar titles or tags
+1. Read `/home/odecio/projects/sql-playground/docs/lessons/INDEX.md` and scan for similar titles or tags
 2. Grep lesson files for key terms from the new discovery
 3. If an existing lesson covers 80%+ of the same content:
    - **Update** the existing lesson with new details instead of creating a duplicate
@@ -89,16 +89,16 @@ Before creating a new lesson, always check for existing coverage:
 
 ## File Organization
 
-**Base Path:** `docs/lessons/` (relative to project root)
+**Base Path:** `/home/odecio/projects/sql-playground/docs/lessons/` (sql-playground repository)
 
-**Absolute Path:** `/home/odecio/projects/mcp-sql-server/docs/lessons/`
+**Absolute Path:** `/home/odecio/projects/sql-playground/docs/lessons/`
 
 **Naming Pattern:** `[YYYY-MM]/YYYY-MM-DD-NNN-slug.md`
 - Example: `2026-01/2026-01-19-018-bracket-escaping-column-aliases.md`
 - NNN = sequential 3-digit number (check INDEX.md for the next available number)
 - slug = kebab-case description
 
-**Index File:** `docs/lessons/INDEX.md`
+**Index File:** `/home/odecio/projects/sql-playground/docs/lessons/INDEX.md`
 
 **Index Entry Format:** When adding to INDEX.md, follow these patterns:
 

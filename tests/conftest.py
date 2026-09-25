@@ -8,6 +8,31 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_real_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Never let tests read the repository's real .env (points at production).
+
+    Points DEFAULT_ENV_PATH (in both config and server, which imports the
+    name directly) at a nonexistent file, and strips SQL_SERVER_* env vars
+    so tests can't pick up real credentials from the process environment.
+    """
+    import mcp_sql_server.config as config_module
+    import mcp_sql_server.server as server_module
+    from mcp_sql_server.config import get_query_dir
+
+    fake_env_path = tmp_path / "no.env"
+    monkeypatch.setattr(config_module, "DEFAULT_ENV_PATH", fake_env_path)
+    monkeypatch.setattr(server_module, "DEFAULT_ENV_PATH", fake_env_path)
+
+    for key in list(os.environ.keys()):
+        if key.startswith("SQL_SERVER_") or key.startswith("DB_"):
+            monkeypatch.delenv(key, raising=False)
+
+    get_query_dir.cache_clear()
+    yield
+    get_query_dir.cache_clear()
+
+
 @pytest.fixture
 def sample_env(tmp_path: Path) -> Path:
     """Create a sample .env file for testing."""
@@ -72,11 +97,15 @@ def mock_cursor() -> MagicMock:
         ("name", str, None, None, None, None, None),
         ("value", float, None, None, None, None, None),
     ]
-    cursor.fetchall.return_value = [
+    rows = [
         (1, "test1", 10.5),
         (2, "test2", 20.5),
         (3, "test3", 30.5),
     ]
+    cursor.fetchall.return_value = rows
+    cursor.fetchmany.side_effect = lambda n: rows[:n]
+    # Matches sample_config.database for the post-query DB_NAME() check.
+    cursor.fetchone.return_value = ("test-db",)
     cursor.rowcount = 3
     cursor.execute = MagicMock()
     cursor.close = MagicMock()

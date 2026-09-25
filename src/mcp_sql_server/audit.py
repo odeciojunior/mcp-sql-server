@@ -6,35 +6,64 @@ import time
 from contextlib import contextmanager
 from typing import Any, Generator
 
+from .sql_lexer import LexError, TokenKind, tokenize
+
 logger = logging.getLogger(__name__)
+
+_MASKED_KINDS = (TokenKind.STRING, TokenKind.NUMBER)
+
+
+def _mask_sql(sql: str) -> str | None:
+    """Rebuild SQL with literals replaced by '?' and comments removed.
+
+    String and numeric literals, and "double-quoted" tokens (strings under
+    QUOTED_IDENTIFIER OFF), become '?'. Any gap between tokens (whitespace or
+    comments) becomes one space; adjacent tokens stay adjacent.
+
+    Returns:
+        The masked SQL, or None if the SQL cannot be tokenized.
+    """
+    try:
+        tokens = tokenize(sql)
+    except LexError:
+        return None
+    parts: list[str] = []
+    prev_end: int | None = None
+    for tok in tokens:
+        if prev_end is not None and tok.start > prev_end:
+            parts.append(" ")
+        masked = tok.kind in _MASKED_KINDS or (
+            tok.kind is TokenKind.QUOTED_IDENT and tok.text.startswith('"')
+        )
+        parts.append("?" if masked else tok.text)
+        prev_end = tok.end
+    return "".join(parts)
 
 
 def _hash_sql(sql: str) -> str:
-    """Create a short hash of SQL for audit logs (privacy-preserving).
+    """Fingerprint the query shape for audit logs.
 
-    Args:
-        sql: SQL statement to hash
+    Hashes the masked SQL, so queries differing only in literals share a
+    hash and literal values cannot be brute-forced from it.
 
     Returns:
-        First 16 characters of SHA256 hash
+        First 16 characters of the SHA-256 hex digest
     """
-    return hashlib.sha256(sql.encode()).hexdigest()[:16]
+    masked = _mask_sql(sql)
+    # Hash a constant placeholder, never the raw SQL, when masking fails:
+    # hashing raw literals would let them be brute-forced from the audit log.
+    source = masked if masked is not None else "<unparseable>"
+    return hashlib.sha256(source.encode()).hexdigest()[:16]
 
 
 def _get_sql_preview(sql: str, max_length: int = 100) -> str:
-    """Get a truncated preview of SQL for logging.
-
-    Args:
-        sql: SQL statement
-        max_length: Maximum length of preview
-
-    Returns:
-        Truncated SQL preview
-    """
-    sql_oneline = " ".join(sql.split())
-    if len(sql_oneline) > max_length:
-        return sql_oneline[:max_length] + "..."
-    return sql_oneline
+    """Get a masked, truncated preview of SQL for logging."""
+    masked = _mask_sql(sql)
+    if masked is None:
+        return "<unparseable>"
+    if len(masked) > max_length:
+        return masked[:max_length] + "..."
+    return masked
 
 
 class AuditLogger:

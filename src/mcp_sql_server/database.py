@@ -1,16 +1,25 @@
 """Database connection management."""
 
 import logging
-import warnings
+import threading
 from contextlib import contextmanager
 from typing import Any, Generator
 
 import pyodbc
 
 from .config import DatabaseConfig, PoolConfig
+from .errors import sanitize_error
 from .pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
+
+
+class SessionStateError(RuntimeError):
+    """A connection's session state could not be restored after a query.
+
+    The connection must not be reused: pooled connections are retired and a
+    non-pooled connection is closed.
+    """
 
 
 class DatabaseManager:
@@ -34,67 +43,44 @@ class DatabaseManager:
         self._use_pool = use_pool
         self._pool: ConnectionPool | None = None
         self._connection: pyodbc.Connection | None = None
+        self._pool_lock = threading.Lock()
 
     def _get_pool(self) -> ConnectionPool:
-        """Lazy initialization of connection pool."""
+        """Lazy initialization of connection pool.
+
+        Double-checked locking: concurrent first calls must not each
+        construct a ConnectionPool (which logs in at init), leaking every
+        pool but the last one assigned to self._pool.
+        """
         if self._pool is None:
-            pool_config = self._pool_config or PoolConfig()
-            self._pool = ConnectionPool(self.config, pool_config)
-            logger.info(
-                f"Connection pool initialized (min={pool_config.min_size}, max={pool_config.max_size})"
-            )
+            with self._pool_lock:
+                if self._pool is None:
+                    pool_config = self._pool_config or PoolConfig()
+                    self._pool = ConnectionPool(self.config, pool_config)
+                    logger.info(
+                        f"Connection pool initialized (min={pool_config.min_size}, max={pool_config.max_size})"
+                    )
         return self._pool
 
     def connect(self) -> pyodbc.Connection:
-        """Establish database connection.
+        """Return the non-pooled connection, opening or reopening it as needed.
 
-        DEPRECATED: When pooling is enabled (the default), this method emits a
-        deprecation warning. Use get_cursor() context manager instead for proper
-        connection lifecycle management with automatic cleanup and pool release.
+        Only valid when pooling is disabled. With pooling, use get_cursor(),
+        which acquires and releases pool connections safely.
 
-        When pooling is disabled:
-            Creates a new connection or returns an existing valid connection.
+        Not thread-safe: it mutates `_connection` without a lock. Non-pooled
+        mode is not used on any tool path.
 
-        When pooling is enabled:
-            Acquires a connection from the pool. The caller is responsible for
-            calling close() or using get_cursor() instead to ensure the connection
-            is properly released back to the pool.
-
-        Warning:
-            This method is NOT thread-safe: it mutates the shared instance
-            attributes `_connection` and `_current_pooled_conn` without a lock.
-            Under mcp 2.x, synchronous tool handlers run in worker threads and
-            may execute concurrently, so calling this from more than one thread
-            can interleave and lose a connection. Use get_cursor() instead --
-            it delegates to the pool, which is lock-protected, and is the path
-            every tool takes.
-
-        Returns:
-            A pyodbc.Connection object.
-
-        Example:
-            # Preferred approach (works with both pooling modes, thread-safe):
-            with db.get_cursor() as cursor:
-                cursor.execute("SELECT 1")
-
-            # Legacy approach (deprecated with pooling):
-            conn = db.connect()  # Emits DeprecationWarning if pooling enabled
+        Raises:
+            RuntimeError: if pooling is enabled.
         """
         if self._use_pool:
-            warnings.warn(
-                "connect() is deprecated when pooling is enabled. Use get_cursor() instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            raise RuntimeError(
+                "connect() is not supported when pooling is enabled; use get_cursor()"
             )
-            # Still provide a connection for backward compat
-            pool = self._get_pool()
-            pooled_conn = pool.acquire()
-            # Store reference so release can happen later
-            self._connection = pooled_conn.connection
-            self._current_pooled_conn = pooled_conn
-            return self._connection
 
         if self._connection is None or not self._is_connected():
+            self._drop_connection()
             self._connection = pyodbc.connect(
                 self.config.get_connection_string(),
                 timeout=self.config.connection_timeout,
@@ -103,11 +89,12 @@ class DatabaseManager:
         return self._connection
 
     def _is_connected(self) -> bool:
-        """Check if connection is still valid."""
+        """Check if the connection is still valid (rolls back the probe)."""
         if self._connection is None:
             return False
         try:
             self._connection.execute("SELECT 1")
+            self._connection.rollback()
             return True
         except (pyodbc.Error, AttributeError):
             return False
@@ -117,53 +104,141 @@ class DatabaseManager:
         """Context manager for cursor with automatic cleanup.
 
         When pooling is enabled, acquires a connection from the pool and
-        releases it after the cursor is closed.
+        releases it after the cursor is closed. On error the cursor is closed
+        before rolling back: a pending result set would make rollback fail
+        with "Connection is busy with results for another command".
         """
         if self._use_pool:
             pool = self._get_pool()
             with pool.connection() as pooled_conn:
                 cursor = pooled_conn.connection.cursor()
+                closed = False
                 try:
                     yield cursor
                 except Exception as e:
-                    try:
-                        pooled_conn.connection.rollback()
-                    except Exception:
-                        logger.debug("Rollback failed during error handling")
+                    self._close_cursor(cursor)
+                    closed = True
+                    if isinstance(e, SessionStateError):
+                        pooled_conn.invalid = True
+                    else:
+                        try:
+                            pooled_conn.connection.rollback()
+                        except Exception:
+                            logger.debug("Rollback failed during error handling")
                     if isinstance(e, pyodbc.Error):
-                        logger.error(f"Database error: {e}")
+                        logger.error(f"Database error: {sanitize_error(e)}")
                     raise
                 finally:
-                    cursor.close()
+                    if not closed:
+                        cursor.close()
         else:
             conn = self.connect()
             cursor = conn.cursor()
+            closed = False
             try:
                 yield cursor
             except Exception as e:
-                try:
-                    conn.rollback()
-                except Exception:
-                    logger.debug("Rollback failed during error handling")
+                self._close_cursor(cursor)
+                closed = True
+                if isinstance(e, SessionStateError):
+                    self._drop_connection()
+                else:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        logger.debug("Rollback failed during error handling")
                 if isinstance(e, pyodbc.Error):
-                    logger.error(f"Database error: {e}")
+                    logger.error(f"Database error: {sanitize_error(e)}")
                 raise
             finally:
-                cursor.close()
+                if not closed:
+                    cursor.close()
 
-    def execute_query(self, sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
-        """Execute a query and return results as list of dicts."""
+    @staticmethod
+    def _close_cursor(cursor: pyodbc.Cursor) -> None:
+        try:
+            cursor.close()
+        except Exception:
+            logger.debug("Cursor close failed during error handling")
+
+    def _drop_connection(self) -> None:
+        """Close and forget the non-pooled connection."""
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except Exception:
+                logger.debug("Connection close failed")
+            self._connection = None
+
+    def execute_query(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | None = None,
+        max_rows: int | None = None,
+        server_limit: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Execute a query and return results as list of dicts.
+
+        Args:
+            sql: SQL to execute, unmodified.
+            params: Positional parameters for ``?`` placeholders.
+            max_rows: Read at most this many rows (``fetchmany``).
+            server_limit: Also cap rows on the server with ``SET ROWCOUNT``.
+                Requires ``max_rows``. Do not use for stored procedures:
+                ROWCOUNT would also limit DML inside them.
+
+        Raises:
+            SessionStateError: the session could not be reset afterwards, or
+                the session's database changed; the connection is retired.
+        """
+        if server_limit and max_rows is None:
+            raise ValueError("server_limit requires max_rows")
+        if max_rows is not None and max_rows < 1:
+            raise ValueError("max_rows must be at least 1")
+
         with self.get_cursor() as cursor:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
+            expected_db: str | None = None
+            if server_limit:
+                # Read the pre-query database name on the same cursor/connection
+                # so the post-query check is case- and collation-consistent,
+                # rather than comparing against the configured name (DB_NAME()
+                # returns the name as stored in sys.databases, which may differ
+                # in case from a case-insensitively matched DATABASE= setting).
+                # No session state has changed yet, so let failures here
+                # propagate as ordinary pyodbc.Error.
+                cursor.execute("SELECT DB_NAME()")
+                row = cursor.fetchone()
+                expected_db = row[0] if row is not None else None
+                # Literal int, not a parameter: a parameterized SET runs inside
+                # sp_executesql and reverts when that call returns.
+                cursor.execute(f"SET ROWCOUNT {int(max_rows or 0)}")
+            try:
+                if params:
+                    cursor.execute(sql, params)
+                else:
+                    cursor.execute(sql)
 
-            if cursor.description is None:
-                return []
+                if cursor.description is None:
+                    return []
 
-            columns = [col[0] for col in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                columns = [col[0] for col in cursor.description]
+                rows = cursor.fetchmany(max_rows) if max_rows is not None else cursor.fetchall()
+                return [dict(zip(columns, row)) for row in rows]
+            finally:
+                if server_limit:
+                    self._reset_session(cursor, expected_db)
+
+    def _reset_session(self, cursor: pyodbc.Cursor, expected_db: str | None) -> None:
+        """Undo SET ROWCOUNT and confirm the session is still on the same database."""
+        try:
+            cursor.cancel()
+            cursor.execute("SET ROWCOUNT 0")
+            cursor.execute("SELECT DB_NAME()")
+            row = cursor.fetchone()
+        except pyodbc.Error as e:
+            raise SessionStateError("could not reset session state") from e
+        if row is None or row[0] != expected_db:
+            raise SessionStateError("session database changed")
 
     def execute_statement(self, sql: str, params: tuple[Any, ...] | None = None) -> int:
         """Execute a modification statement and return affected row count."""
@@ -171,6 +246,7 @@ class DatabaseManager:
             pool = self._get_pool()
             with pool.connection() as pooled_conn:
                 cursor = pooled_conn.connection.cursor()
+                closed = False
                 try:
                     if params:
                         cursor.execute(sql, params)
@@ -180,18 +256,25 @@ class DatabaseManager:
                     pooled_conn.connection.commit()
                     return affected
                 except Exception as e:
+                    # Close the cursor before rollback: a pending result set
+                    # would make rollback fail with "Connection is busy with
+                    # results for another command", mirroring get_cursor().
+                    self._close_cursor(cursor)
+                    closed = True
                     try:
                         pooled_conn.connection.rollback()
                     except Exception:
                         logger.debug("Rollback failed during error handling")
                     if isinstance(e, pyodbc.Error):
-                        logger.error(f"Database error: {e}")
+                        logger.error(f"Database error: {sanitize_error(e)}")
                     raise
                 finally:
-                    cursor.close()
+                    if not closed:
+                        cursor.close()
         else:
             conn = self.connect()
             cursor = conn.cursor()
+            closed = False
             try:
                 if params:
                     cursor.execute(sql, params)
@@ -201,21 +284,25 @@ class DatabaseManager:
                 conn.commit()
                 return affected_rows
             except Exception as e:
+                self._close_cursor(cursor)
+                closed = True
                 try:
                     conn.rollback()
                 except Exception:
                     logger.debug("Rollback failed during error handling")
                 if isinstance(e, pyodbc.Error):
-                    logger.error(f"Database error: {e}")
+                    logger.error(f"Database error: {sanitize_error(e)}")
                 raise
             finally:
-                cursor.close()
+                if not closed:
+                    cursor.close()
 
     def close(self) -> None:
         """Close database connection(s) and pool."""
-        if self._pool:
-            self._pool.close()
-            self._pool = None
+        with self._pool_lock:
+            if self._pool:
+                self._pool.close()
+                self._pool = None
         if self._connection:
             self._connection.close()
             self._connection = None

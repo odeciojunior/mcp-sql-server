@@ -1,5 +1,6 @@
 """Tests for MCP server tools and resources."""
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -31,6 +32,16 @@ from mcp_sql_server.resources.database_info import (
 )
 from mcp_sql_server.tools import query_execution, schema_discovery, object_definitions, stored_procedures
 from mcp_sql_server.resources import database_info
+
+
+@pytest.fixture
+def default_registry():
+    from mcp_sql_server.config import DatabaseConfig
+    from mcp_sql_server.registry import DatabaseRegistry
+
+    return DatabaseRegistry(
+        configs={"default": DatabaseConfig(host="h", user="u", password="p", database="d")}
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -261,7 +272,7 @@ class TestExecuteStatementTool:
     def test_execute_statement_select_rejected(self):
         result = execute_statement("SELECT * FROM Users")
         assert result["success"] is False
-        assert "execute_query" in result["error"]
+        assert "Statement type" in result["error"]
 
     def test_execute_statement_drop_blocked(self):
         result = execute_statement("DROP TABLE Users")
@@ -336,6 +347,29 @@ class TestExecuteQueryFileTool:
         assert result["success"] is False
         assert "not found" in result["error"]
 
+    def test_execute_query_file_strips_utf8_bom(self):
+        """F9: a .sql file saved with a UTF-8 BOM must execute cleanly, no
+        stray U+FEFF glued onto the SQL passed to the database layer."""
+        with patch.object(query_execution, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = [{"id": 1}]
+            mock_get_db.return_value = mock_db
+
+            with patch("mcp_sql_server.tools.query_execution.get_query_dir") as mock_dir:
+                import tempfile
+                with tempfile.TemporaryDirectory() as tmp:
+                    from pathlib import Path
+                    qdir = Path(tmp)
+                    (qdir / "bom.sql").write_bytes(b"\xef\xbb\xbfSELECT 1")
+                    mock_dir.return_value = qdir
+
+                    result = execute_query_file("bom.sql")
+
+            assert result["success"] is True
+            sql_arg = mock_db.execute_query.call_args[0][0]
+            assert not sql_arg.startswith("﻿")
+            assert sql_arg == "SELECT 1"
+
 
 class TestListTablesTool:
     """Tests for list_tables tool."""
@@ -381,6 +415,30 @@ class TestListTablesTool:
 
             assert result["success"] is False
             assert "Connection lost" in result["error"]
+
+    def test_list_tables_error_is_sanitized(self):
+        """F10: schema_discovery's except-Exception handlers must sanitize, not str(e)."""
+        with patch.object(schema_discovery, '_get_db') as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.side_effect = Exception("Login failed for user 'bob'")
+            mock_get_db.return_value = mock_db
+
+            result = list_tables()
+
+            assert result["success"] is False
+            assert "bob" not in result["error"]
+
+    def test_list_tables_log_is_sanitized(self, caplog):
+        """F10: the logger.error call itself must not leak raw exception text."""
+        with patch.object(schema_discovery, '_get_db') as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.side_effect = Exception("Login failed for user 'bob'")
+            mock_get_db.return_value = mock_db
+
+            with caplog.at_level(logging.ERROR):
+                list_tables()
+
+            assert "bob" not in caplog.text
 
     def test_list_tables_empty_result(self):
         with patch.object(schema_discovery, '_get_db') as mock_get_db:
@@ -641,6 +699,21 @@ class TestExecuteProcedureTool:
             assert result["success"] is False
             assert "Proc error" in result["error"]
 
+    def test_execute_procedure_runs_read_only(self, mock_pyodbc, mock_connection, sample_config):
+        """D2: execute_procedure runs through the read path (never commits);
+        the pool's release-time reset always rolls back, undoing any writes
+        the procedure made, even with an internal BEGIN TRAN/COMMIT."""
+        from mcp_sql_server.database import DatabaseManager
+
+        real_db = DatabaseManager(sample_config)
+        with patch.object(stored_procedures, '_get_db', return_value=real_db):
+            result = execute_procedure("GetUserById")
+
+        assert result["success"] is True
+        mock_connection.commit.assert_not_called()
+        mock_connection.rollback.assert_called()
+        real_db.close()
+
 
 class TestResourceTables:
     """Tests for sqlserver://tables resource."""
@@ -719,6 +792,17 @@ class TestResourceDatabaseInfo:
             result = resource_database_info()
 
             assert "Error" in result
+
+    def test_resource_database_info_sanitizes_exception(self):
+        """R1: resources must not echo raw exception text back to the caller."""
+        with patch.object(database_info, '_get_db') as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.side_effect = Exception("Login failed for user 'bob'")
+            mock_get_db.return_value = mock_db
+
+            result = resource_database_info()
+
+            assert "bob" not in result
 
     def test_resource_database_info_empty_result(self):
         with patch.object(database_info, '_get_db') as mock_get_db:
@@ -1250,3 +1334,132 @@ class TestResourceDatabases:
             result = resource_databases()
 
             assert "Error" in result
+
+
+class TestRowLimitWiring:
+    def test_execute_query_passes_sql_unmodified(self, mock_query_results):
+        with patch.object(query_execution, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = mock_query_results
+            mock_get_db.return_value = mock_db
+
+            sql = "WITH c AS (SELECT 1 x) SELECT * FROM c ORDER BY x"
+            result = execute_query(sql, limit=50)
+
+            assert result["success"] is True
+            args, kwargs = mock_db.execute_query.call_args
+            assert args[0] == sql
+            assert kwargs == {"max_rows": 51, "server_limit": True}
+
+    def test_execute_query_reports_truncation(self):
+        rows = [{"id": i} for i in range(51)]
+        with patch.object(query_execution, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = rows
+            mock_get_db.return_value = mock_db
+
+            result = execute_query("SELECT id FROM t", limit=50)
+
+            assert result["truncated"] is True
+            assert result["row_count"] == 50
+
+    def test_execute_procedure_caps_rows(self):
+        from mcp_sql_server.tools import stored_procedures
+
+        rows = [{"id": i} for i in range(stored_procedures.MAX_PROCEDURE_ROWS + 1)]
+        with patch.object(stored_procedures, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = rows
+            mock_get_db.return_value = mock_db
+
+            result = execute_procedure("GetAll")
+
+            assert result["success"] is True
+            assert result["truncated"] is True
+            assert result["row_count"] == stored_procedures.MAX_PROCEDURE_ROWS
+            _, kwargs = mock_db.execute_query.call_args
+            assert kwargs == {"max_rows": stored_procedures.MAX_PROCEDURE_ROWS + 1}
+
+    def test_execute_procedure_not_truncated(self, mock_procedure_results):
+        from mcp_sql_server.tools import stored_procedures
+
+        with patch.object(stored_procedures, "_get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.execute_query.return_value = mock_procedure_results
+            mock_get_db.return_value = mock_db
+
+            result = execute_procedure("GetUserById", params={"UserId": 1})
+
+            assert result["truncated"] is False
+
+
+class TestMainStartup:
+    @pytest.fixture(autouse=True)
+    def _reset_registry(self):
+        server._registry = None
+        yield
+        if server._registry is not None:
+            server._registry.close()
+        server._registry = None
+
+    def _run_main(self, registry=None, get_registry_error=None, dotenv=None):
+        calls = []
+        get_registry = MagicMock(return_value=registry, side_effect=get_registry_error)
+        with patch.object(server, "dotenv_values", return_value=dotenv or {}), \
+             patch.object(server, "setup_logging", side_effect=lambda *a: calls.append(("setup_logging", a))), \
+             patch.object(server, "get_registry", get_registry), \
+             patch.object(server.mcp, "run", side_effect=lambda **kw: calls.append(("run", kw))):
+            server.main()
+        return calls
+
+    def test_order_and_transport(self, default_registry):
+        calls = self._run_main(registry=default_registry)
+        assert [c[0] for c in calls] == ["setup_logging", "run"]
+        assert calls[1][1] == {"transport": "stdio"}
+
+    def test_logging_vars_from_dotenv_when_not_in_env(self, default_registry, monkeypatch):
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        calls = self._run_main(registry=default_registry, dotenv={"LOG_LEVEL": "DEBUG", "LOG_FORMAT": "json"})
+        assert calls[0][1] == ("DEBUG", "json")
+
+    def test_process_env_beats_dotenv(self, default_registry, monkeypatch):
+        monkeypatch.setenv("LOG_LEVEL", "ERROR")
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        calls = self._run_main(registry=default_registry, dotenv={"LOG_LEVEL": "DEBUG"})
+        assert calls[0][1] == ("ERROR", None)
+
+    def test_main_does_not_mutate_environ(self, default_registry, monkeypatch):
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        self._run_main(registry=default_registry, dotenv={"LOG_LEVEL": "DEBUG"})
+        assert "LOG_LEVEL" not in os.environ
+
+    def test_config_errors_logged_without_values_and_server_starts(self, caplog):
+        from mcp_sql_server.config import DatabaseConfig
+        from mcp_sql_server.registry import DatabaseRegistry
+
+        registry = DatabaseRegistry(
+            configs={"default": DatabaseConfig(host="h", user="u", password="p", database="d")},
+            config_errors={"archive": "password: string_too_short"},
+        )
+        with caplog.at_level(logging.ERROR):
+            calls = self._run_main(registry=registry)
+        assert "Database 'archive' configuration invalid: password: string_too_short" in caplog.text
+        assert calls[-1][0] == "run"
+
+    def test_invalid_db_databases_logged_and_server_starts(self, caplog):
+        with caplog.at_level(logging.ERROR):
+            calls = self._run_main(get_registry_error=ValueError("Invalid database alias '1x'"))
+        assert "Invalid database alias '1x'" in caplog.text
+        assert calls[-1][0] == "run"
+
+    def test_no_import_time_logging_config(self):
+        import inspect as _inspect
+
+        assert "basicConfig" not in _inspect.getsource(server)
+
+    def test_every_tool_is_wrapped(self):
+        import inspect as _inspect
+
+        source = _inspect.getsource(server)
+        assert source.count("@mcp.tool()\n@with_request_id") == 10

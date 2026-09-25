@@ -1,14 +1,18 @@
 """MCP SQL Server - Main MCPServer implementation."""
 
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
+from dotenv import dotenv_values
 from mcp.server.mcpserver import MCPServer
 
 from . import __version__
+from .config import DEFAULT_ENV_PATH, describe_config_error
 from .database import DatabaseManager
+from .logging_config import setup_logging, with_request_id
 from .registry import DatabaseRegistry
 
 # Import tools and resources for registration
@@ -32,8 +36,8 @@ from .resources import (
     resource_tables,
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Logging is configured in main(). MCPServer's constructor installs the
+# SDK's default stderr handler at import; setup_logging() replaces it.
 logger = logging.getLogger(__name__)
 
 # Global database registry with thread-safe initialization
@@ -92,6 +96,7 @@ def get_db(database: str = "default") -> DatabaseManager:
 
 # Register tools
 @mcp.tool()
+@with_request_id
 def _execute_query(
     sql: str,
     params: list[str] | None = None,
@@ -114,6 +119,7 @@ def _execute_query(
 
 
 @mcp.tool()
+@with_request_id
 def _execute_statement(
     sql: str,
     params: list[str] | None = None,
@@ -134,6 +140,7 @@ def _execute_statement(
 
 
 @mcp.tool()
+@with_request_id
 def _execute_query_file(
     filename: str,
     database: str = "default",
@@ -152,6 +159,7 @@ def _execute_query_file(
 
 
 @mcp.tool()
+@with_request_id
 def _list_tables(
     schema: str | None = None,
     database: str = "default",
@@ -170,6 +178,7 @@ def _list_tables(
 
 
 @mcp.tool()
+@with_request_id
 def _describe_table(
     table_name: str,
     schema: str = "dbo",
@@ -190,6 +199,7 @@ def _describe_table(
 
 
 @mcp.tool()
+@with_request_id
 def _get_view_definition(
     view_name: str,
     schema: str = "dbo",
@@ -210,6 +220,7 @@ def _get_view_definition(
 
 
 @mcp.tool()
+@with_request_id
 def _get_function_definition(
     function_name: str,
     schema: str = "dbo",
@@ -230,6 +241,7 @@ def _get_function_definition(
 
 
 @mcp.tool()
+@with_request_id
 def _list_procedures(
     schema: str | None = None,
     database: str = "default",
@@ -248,6 +260,7 @@ def _list_procedures(
 
 
 @mcp.tool()
+@with_request_id
 def _execute_procedure(
     proc_name: str,
     schema: str = "dbo",
@@ -265,11 +278,16 @@ def _execute_procedure(
 
     Returns:
         Dictionary with result sets
+
+    Note:
+        Runs read-only: any data changes made by the procedure are rolled
+        back when the connection is returned to the pool.
     """
     return execute_procedure(proc_name, schema, params, database=database)
 
 
 @mcp.tool()
+@with_request_id
 def _list_databases() -> dict[str, Any]:
     """
     List all configured database connections.
@@ -311,8 +329,33 @@ def _resource_databases() -> str:
     return resource_databases()
 
 
+def _logging_settings() -> tuple[str | None, str | None]:
+    """LOG_LEVEL/LOG_FORMAT from the process env, else from .env.
+
+    Reads .env without modifying os.environ; no loader in this package ever
+    merges .env into the process environment.
+    """
+    file_values = dotenv_values(DEFAULT_ENV_PATH)  # {} when the file is missing
+    level = os.environ.get("LOG_LEVEL") or file_values.get("LOG_LEVEL")
+    log_format = os.environ.get("LOG_FORMAT") or file_values.get("LOG_FORMAT")
+    return level, log_format
+
+
+def _report_config_errors() -> None:
+    """Log invalid database configs at startup without stopping the server."""
+    try:
+        registry = get_registry()
+    except ValueError as e:
+        logger.error("Database configuration invalid: %s", describe_config_error(e))
+        return
+    for name, message in registry.config_errors.items():
+        logger.error("Database '%s' configuration invalid: %s", name, message)
+
+
 def main() -> None:
     """Entry point for the MCP server."""
+    setup_logging(*_logging_settings())
+    _report_config_errors()
     mcp.run(transport="stdio")
 
 

@@ -126,13 +126,16 @@ class TestDatabaseRegistry:
         for db in info:
             assert "password" not in db
 
-    @patch("mcp_sql_server.registry.load_all_database_configs")
-    @patch("mcp_sql_server.registry.load_all_pool_configs")
-    def test_from_env(self, mock_pool_configs, mock_db_configs, default_config):
-        mock_db_configs.return_value = {"default": default_config}
-        mock_pool_configs.return_value = {"default": PoolConfig()}
+    @patch("mcp_sql_server.registry.load_pool_config")
+    @patch("mcp_sql_server.registry.load_database_config")
+    @patch("mcp_sql_server.registry.get_database_names")
+    def test_from_env(self, mock_names, mock_db_config, mock_pool_config, default_config):
+        mock_names.return_value = ["default"]
+        mock_db_config.return_value = default_config
+        mock_pool_config.return_value = PoolConfig()
         registry = DatabaseRegistry.from_env()
         assert "default" in registry.list_databases()
+        assert registry.config_errors == {}
 
     @patch("pyodbc.connect")
     def test_get_default_no_arg(self, mock_connect, registry):
@@ -159,3 +162,68 @@ class TestDatabaseRegistry:
         assert len(registry._managers) == 0
         first_manager.close.assert_called_once()
         second_manager.close.assert_called_once()
+
+
+class TestMisconfiguredAliases:
+    def _from_env_with_bad_alias(self, default_config):
+        def db_config(name, env_path=None):
+            if name == "broken":
+                DatabaseConfig(host="", user="u", password="p-secret", database="d")
+            return default_config
+
+        with patch("mcp_sql_server.registry.get_database_names", return_value=["default", "broken"]), \
+             patch("mcp_sql_server.registry.load_database_config", side_effect=db_config), \
+             patch("mcp_sql_server.registry.load_pool_config", return_value=PoolConfig()):
+            return DatabaseRegistry.from_env()
+
+    def test_bad_alias_recorded_not_raised(self, default_config):
+        registry = self._from_env_with_bad_alias(default_config)
+        assert registry.config_errors == {"broken": "host: string_too_short"}
+        assert registry.list_databases() == ["default", "broken"]
+
+    def test_get_bad_alias_raises_safe_message(self, default_config):
+        registry = self._from_env_with_bad_alias(default_config)
+        with pytest.raises(ValueError, match="Database 'broken' is misconfigured: host: string_too_short") as exc_info:
+            registry.get("broken")
+        assert "p-secret" not in str(exc_info.value)
+
+    def test_default_still_works(self, default_config, mock_pyodbc):
+        registry = self._from_env_with_bad_alias(default_config)
+        assert registry.get("default") is registry.get("default")
+        registry.close()
+
+    def test_database_info_reports_status(self, default_config):
+        info = self._from_env_with_bad_alias(default_config).get_database_info()
+        by_name = {d["name"]: d for d in info}
+        assert by_name["default"]["status"] == "ok"
+        assert by_name["broken"] == {
+            "name": "broken",
+            "status": "misconfigured",
+            "error": "host: string_too_short",
+        }
+
+    def test_misconfigured_default_allowed(self, second_config):
+        registry = DatabaseRegistry(
+            configs={"analytics": second_config},
+            config_errors={"default": "host: string_too_short"},
+        )
+        with pytest.raises(ValueError, match="misconfigured"):
+            registry.get("default")
+
+    def test_invalid_db_databases_still_raises(self):
+        with patch("mcp_sql_server.registry.get_database_names", side_effect=ValueError("Invalid database alias '1x'")):
+            with pytest.raises(ValueError, match="Invalid database alias"):
+                DatabaseRegistry.from_env()
+
+
+def test_resource_databases_shows_status(default_config):
+    from mcp_sql_server.resources import database_info
+
+    registry = DatabaseRegistry(
+        configs={"default": default_config},
+        config_errors={"broken": "host: string_too_short"},
+    )
+    with patch.object(database_info, "_get_registry", return_value=registry):
+        text = database_info.resource_databases()
+    assert "| broken | - | - | - | misconfigured: host: string_too_short |" in text
+    assert "| default | host1 | 1433 | db1 | ok |" in text

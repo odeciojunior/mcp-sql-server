@@ -42,7 +42,7 @@ def multi_db_env() -> Generator[None, None, None]:
         "DB_ARCHIVE_PASSWORD": "pass3",
         "DB_ARCHIVE_NAME": "db3",
     })
-    with patch("mcp_sql_server.config.load_dotenv"):
+    with patch("mcp_sql_server.config._read_dotenv", return_value={}):
         try:
             yield
         finally:
@@ -64,7 +64,7 @@ def single_db_env() -> Generator[None, None, None]:
         "DB_PASSWORD": "pass1",
         "DB_NAME": "db1",
     })
-    with patch("mcp_sql_server.config.load_dotenv"):
+    with patch("mcp_sql_server.config._read_dotenv", return_value={}):
         try:
             yield
         finally:

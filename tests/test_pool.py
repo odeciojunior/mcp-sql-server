@@ -548,3 +548,61 @@ class TestPoolConfig:
             assert config.min_size == 2
             assert config.max_size == 10
             assert config.idle_timeout == 600
+
+
+class TestInvalidConnections:
+    def test_invalid_connection_is_closed_on_release(self, db_config, pool_config):
+        with patch("pyodbc.connect") as mock_connect:
+            mock_conn = MagicMock()
+            mock_connect.return_value = mock_conn
+
+            pool = ConnectionPool(db_config, pool_config)
+            pooled_conn = pool.acquire()
+            pooled_conn.invalid = True
+            pool.release(pooled_conn)
+
+            assert pool.available == 0
+            mock_conn.close.assert_called()
+            pool.close()
+
+    def test_new_connection_is_valid(self):
+        assert PooledConnection(connection=MagicMock()).invalid is False
+
+
+class TestCreationFailure:
+    def test_fails_fast_when_nothing_can_be_created(self, db_config):
+        cfg = PoolConfig(min_size=1, max_size=3, acquire_timeout=5.0)
+        with patch("pyodbc.connect", side_effect=pyodbc.Error("login failed")) as mock_connect:
+            pool = ConnectionPool(db_config, cfg)
+            started = time.monotonic()
+            with pytest.raises(pyodbc.Error, match="login failed"):
+                pool.acquire()
+            assert time.monotonic() - started < 1.0
+            # one pre-create attempt at init + one attempt in acquire
+            assert mock_connect.call_count <= 2
+            assert pool.stats()["failed_acquisitions"] == 1
+            pool.close()
+
+    def test_waits_when_other_connections_exist(self, db_config):
+        cfg = PoolConfig(min_size=1, max_size=2, acquire_timeout=0.5)
+        with patch("pyodbc.connect") as mock_connect:
+            mock_connect.return_value = MagicMock()
+            pool = ConnectionPool(db_config, cfg)
+            held = pool.acquire()
+            mock_connect.side_effect = pyodbc.Error("login failed")
+            calls_before = mock_connect.call_count
+            with pytest.raises(TimeoutError):
+                pool.acquire()
+            assert mock_connect.call_count - calls_before == 1
+            pool.release(held)
+            pool.close()
+
+    def test_pool_creation_failure_log_is_sanitized(self, db_config, caplog):
+        """F4: a login failure logged during pre-create must not leak the username."""
+        cfg = PoolConfig(min_size=1, max_size=1, acquire_timeout=0.5)
+        with patch("pyodbc.connect") as mock_connect:
+            mock_connect.side_effect = pyodbc.Error("Login failed for user 'bob'")
+            with caplog.at_level("WARNING"):
+                pool = ConnectionPool(db_config, cfg)
+            assert "bob" not in caplog.text
+            pool.close()

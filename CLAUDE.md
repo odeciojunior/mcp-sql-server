@@ -65,7 +65,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
                     |  ConnectionPool  |
                     +------------------+
 
-Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_config.py
+Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_config.py, sql_lexer.py
 ```
 
 ### Module Responsibilities
@@ -78,6 +78,7 @@ Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_co
 | `pool.py` | Thread-safe connection pooling with health checks and retirement |
 | `config.py` | Pydantic config from `.env`, multi-DB env parsing |
 | `security.py` | SQL validation, blocked keyword detection, identifier sanitization |
+| `sql_lexer.py` | T-SQL tokenizer used by validation and audit masking |
 | `cache.py` | TTL cache with `@cached` decorator for metadata |
 | `audit.py` | Query hashing, execution timing, audit events |
 | `errors.py` | Exception hierarchy, error sanitization |
@@ -95,6 +96,8 @@ All tools accept optional `database` parameter (default: `"default"`) for multi-
 Copy `.env.example` to `.env` and fill in your values. Required: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`.
 
 **Warning:** `.env` contains credentials and is gitignored. Use `.env.example` as a template.
+
+At startup each database config is validated and errors are logged (no values); the server still starts, and only calls to a misconfigured database fail.
 
 ### Multi-Database Support
 
@@ -129,19 +132,25 @@ Each alias reads prefixed env vars (`DB_{ALIAS}_*`) and gets independent pool co
 | Category | Keywords |
 |----------|----------|
 | DDL | `DROP`, `TRUNCATE`, `ALTER`, `CREATE` |
-| DCL | `GRANT`, `REVOKE` |
-| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL` |
+| DCL | `GRANT`, `REVOKE`, `DENY` |
+| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL`, `RECONFIGURE`, `CHECKPOINT` |
 | External | `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `BULK` |
+| Statement starters | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD`, `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
+| Pairs / functions | `NEXT VALUE`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION`, `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `fn_get_audit_file_v2`, `fn_dump_dblog`, `fn_dump_dblog_xtp`, `fn_xe_telemetry_blob_target_read_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
 | System Procs | `xp_*`, `sp_*` prefixes |
+
+Validation tokenizes SQL (`sql_lexer.py`); strings, quoted identifiers, and comments are never checked for keywords.
 
 ### Statement Type Enforcement
 
-- `execute_query`: only `SELECT` and `WITH`
-- `execute_statement`: only `INSERT`, `UPDATE`, `DELETE`
+- One statement per call at parenthesis depth 0 (no reliance on `;`).
+- `execute_query`: first word `SELECT`/`WITH`; `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`INTO`/`SET` rejected anywhere; extra top-level `SELECT` only after `UNION`/`EXCEPT`/`INTERSECT`.
+- `execute_statement`: first word `INSERT`/`UPDATE`/`DELETE`; one `SET` in `UPDATE`; top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` / `OUTPUT ... INTO`.
+- CTE-prefixed DML is unsupported.
 
 ## Testing
 
-369 tests with 85%+ coverage. Tests use mocked database connections (no live DB required).
+Comprehensive suite with 85%+ coverage. Tests use mocked database connections (no live DB required).
 
 Key test files:
 - `test_server.py` - Tool and resource integration tests
@@ -155,6 +164,11 @@ Key test files:
 - `test_errors.py` - Error hierarchy and sanitization
 - `test_server_registration.py` - MCP SDK registration surface (tool/resource names, schemas)
 - `test_concurrency.py` - Parallel pool/registry access (mcp 2.x runs sync handlers in threads)
+- `test_config_multi.py` - Multi-database config and alias parsing
+- `test_query_dir.py` - Query directory resolution
+- `test_sql_lexer.py` - T-SQL tokenizer
+- `test_logging_config.py` - Log formats and request IDs
+- `test_utils.py` - Lazy server accessors
 
 ## Type Safety
 

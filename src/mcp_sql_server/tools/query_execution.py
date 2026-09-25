@@ -9,28 +9,10 @@ from ..audit import audit_logger, timed_operation
 from ..config import get_query_dir
 from ..errors import create_error_response, sanitize_error
 from ..security import validate_query
+from ..sql_lexer import tokenize
 from ..utils import get_db as _get_db
 
 logger = logging.getLogger(__name__)
-
-
-def _inject_top_clause(sql: str, limit: int) -> str:
-    """Inject TOP clause into SELECT statement for server-side limiting.
-
-    Wraps the original query in a subquery with TOP to limit results at the
-    database level, avoiding fetching all rows then truncating client-side.
-
-    Args:
-        sql: The original SQL query
-        limit: Maximum number of rows to return
-
-    Returns:
-        Modified SQL with TOP clause applied
-    """
-    # Fetch limit + 1 to detect if truncation occurred
-    fetch_limit = limit + 1
-    # Wrap query in a subquery with TOP to limit at database level
-    return f"SELECT TOP {fetch_limit} * FROM ({sql}) AS _limited_query"
 
 
 def execute_query(
@@ -59,13 +41,14 @@ def execute_query(
     # Clamp limit to reasonable bounds
     limit = max(1, min(limit, 10000))
 
-    # Inject TOP clause to limit results at database level
-    limited_sql = _inject_top_clause(sql, limit)
-
     with timed_operation() as timing:
         try:
             params_tuple = tuple(params) if params else None
-            results = _get_db(database).execute_query(limited_sql, params_tuple)
+            # Fetch limit + 1 so truncation can be detected. The SQL runs
+            # unmodified; the manager caps rows with SET ROWCOUNT.
+            results = _get_db(database).execute_query(
+                sql, params_tuple, max_rows=limit + 1, server_limit=True
+            )
 
             # Check if we got more than limit (meaning truncation occurred)
             truncated = len(results) > limit
@@ -123,10 +106,8 @@ def execute_statement(
         audit_logger.log_validation_failure(sql, error, database=database)
         return {"error": error, "success": False}
 
-    # Additional check: must be a modification statement
-    first_word = sql.strip().upper().split()[0]
-    if first_word not in {"INSERT", "UPDATE", "DELETE"}:
-        return {"error": "Use execute_query for SELECT statements", "success": False}
+    # Validation guarantees the first token is INSERT, UPDATE, or DELETE.
+    first_word = tokenize(sql)[0].upper
 
     with timed_operation() as timing:
         try:
@@ -197,8 +178,11 @@ def execute_query_file(
         return {"error": f"Query file not found: {filename}", "success": False}
 
     try:
-        sql = query_file.read_text(encoding="utf-8")
+        # utf-8-sig strips a UTF-8 BOM if present (and is a no-op otherwise),
+        # so a query file saved with a BOM by some editors doesn't get a
+        # stray U+FEFF glued onto its first token.
+        sql = query_file.read_text(encoding="utf-8-sig")
         return execute_query(sql, database=database)
     except Exception as e:
-        logger.error(f"Error reading query file: {e}")
-        return {"error": str(e), "success": False}
+        logger.error(f"Error reading query file: {sanitize_error(e)}")
+        return {"error": sanitize_error(e), "success": False}

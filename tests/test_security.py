@@ -209,3 +209,203 @@ class TestValidateProcedureName:
         is_valid, error = validate_procedure_name("export_data")
         assert is_valid
         assert error == ""
+
+
+# pytest and validate_query are already imported at the top of this module.
+
+READ_ACCEPTED = [
+    "WITH c AS (SELECT 1 x) SELECT * FROM c",
+    "SELECT * FROM t ORDER BY id",
+    "SELECT a FROM t UNION ALL SELECT b FROM u",
+    "SELECT a FROM t EXCEPT SELECT b FROM u",
+    "SELECT * FROM t ORDER BY id OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY",
+    "-- note\nSELECT 1",
+    "SELECT * FROM t WHERE x = 'DROP'",
+    "SELECT [Create], Situação FROM t",
+    "SELECT 1 /* DROP */",
+    "SELECT 1;",
+    "SELECT 1; -- done",
+    "SELECT * FROM t WHERE a = ? AND b = ?",
+    "SELECT Situação FROM Req WHERE Descrição = N'Não'",
+    "SELECT * FROM t WITH (NOLOCK)",
+    "SELECT CASE WHEN a = 1 THEN 'x' END FROM t",
+    "SELECT * FROM t WHERE name = 'xp_cmdshell'",
+    "SELECT [sp_who] FROM t",
+    "SELECT * FROM t WHERE a IN (SELECT a FROM u)",
+]
+
+READ_REJECTED = [
+    ("SELECT 1; SELECT 2", "Multiple statements"),
+    ("SELECT 1 SELECT 2", "Multiple statements"),
+    ("SELECT 1 WAITFOR DELAY '00:01'", "WAITFOR"),
+    ("SELECT 1 USE master", "USE"),
+    ("SELECT 1 SET ROWCOUNT 0", "SET"),
+    ("WITH c AS (SELECT 1 x) DELETE FROM t", "DELETE"),
+    ("SELECT * INTO NewTable FROM t", "INTO"),
+    ("SELECT NEXT VALUE FOR dbo.Seq", "NEXT VALUE"),
+    ("SELECT * FROM sys.fn_trace_gettable('x', 1)", "FN_TRACE_GETTABLE"),
+    ("SELECT * FROM sys.[fn_trace_gettable]('x', 1)", "FN_TRACE_GETTABLE"),
+    ('SELECT * FROM "fn_get_audit_file"(\'x\', NULL, NULL)', "FN_GET_AUDIT_FILE"),
+    (
+        "SELECT * FROM sys.fn_get_audit_file_v2('x',NULL,NULL,NULL,NULL)",
+        "FN_GET_AUDIT_FILE_V2",
+    ),
+    (
+        r"SELECT * FROM sys.fn_dump_dblog(NULL,NULL,'DISK',1,'\\h\s\x.bak',NULL,NULL,NULL,NULL,"
+        r"NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,"
+        r"NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,"
+        r"NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,"
+        r"NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
+        "FN_DUMP_DBLOG",
+    ),
+    ("SELECT 'unterminated", "Invalid SQL"),
+    ("SELECT 1 --\rDELETE FROM t", "Invalid SQL"),
+    ("SELECT 1 DECLARE @p int", "DECLARE"),
+    ("SELECT 1e--'\nEXEC('x') --'", "Invalid SQL"),
+    ("SELECT 1e-- \nDELETE FROM t", "Invalid SQL"),
+    ("SELECT 1 BEGIN TRAN", "BEGIN"),
+    ("SELECT 1 COMMIT", "COMMIT"),
+    ("SELECT 1 DENY SELECT ON t TO u", "DENY"),
+    ("SELECT 1 EXEC('x')", "EXEC"),
+    ("SELECT 1 WRITETEXT t.c @p 'x'", "WRITETEXT"),
+    ("SELECT 1 DISABLE TRIGGER trg ON t", "DISABLE TRIGGER"),
+    ("SELECT 1 ADD SIGNATURE TO p BY CERTIFICATE c", "ADD"),
+    ("-- only a comment", "empty"),
+    ("(SELECT 1)", "Statement type"),
+    (r"SELECT * FROM sys.dm_os_file_exists('\\h\s\x')", "DM_OS_FILE_EXISTS"),
+    (r"SELECT * FROM sys.dm_os_enumerate_filesystem('\\h\s', '*')", "DM_OS_ENUMERATE_FILESYSTEM"),
+    ("SELECT 1eEXEC('select 1')", "EXEC"),
+    ("SELECT 1eDELETE FROM t", "DELETE"),
+    ("SELECT 1.eWAITFOR DELAY '00:00:05'", "WAITFOR"),
+    ("SELECT .5eUSE master", "USE"),
+    ("SELECT (1", "Unbalanced"),
+    ("SELECT 1)", "Unbalanced"),
+]
+
+STATEMENT_ACCEPTED = [
+    "INSERT INTO t (a) SELECT a FROM u WHERE b = 1",
+    "INSERT INTO t (a) VALUES (?)",
+    "UPDATE t SET a = (SELECT MAX(b) FROM u) WHERE id = 1",
+    "UPDATE t SET a = 1 FROM t JOIN u ON t.id = u.id",
+    "DELETE FROM t OUTPUT deleted.id INTO audit WHERE id = 1",
+    "INSERT INTO t SELECT a FROM u UNION ALL SELECT b FROM v",
+    "update t set a = 1 where id = ?",
+    "UPDATE t WITH (ROWLOCK) SET a = 1 WHERE b = 2",
+    "UPDATE TOP (5) t SET a = 1",
+]
+
+STATEMENT_REJECTED = [
+    ("INSERT INTO t VALUES (1); EXEC('x')", "Multiple statements"),
+    ("INSERT INTO t VALUES (1) EXEC('x')", "EXEC"),
+    ("INSERT INTO t VALUES (1) DELETE FROM u", "Multiple statements"),
+    ("UPDATE t SET a=1 SELECT * INTO x FROM y", "Multiple statements"),
+    ("UPDATE t SET a=1 DISABLE TRIGGER trg ON t", "DISABLE TRIGGER"),
+    ("UPDATE t SET a=1 SET b=2", "Multiple statements"),
+    ("INSERT INTO t VALUES (1) SELECT 1", "Multiple statements"),
+    ("INSERT INTO t SELECT 1 SELECT 2", "Multiple statements"),
+    ("INSERT INTO t SELECT * INTO x FROM y", "INTO not allowed"),
+    ("DELETE FROM t SET a = 1", "Multiple statements"),
+    ("SELECT 1", "Statement type"),
+    ("WITH c AS (SELECT 1 x) DELETE FROM t", "Statement type"),
+    ("MERGE t USING u ON 1=1 WHEN MATCHED THEN DELETE;", "Statement type"),
+    # S1: UPDATE STATISTICS is a maintenance command, not UPDATE ... SET
+    (
+        "UPDATE STATISTICS dbo.Req SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        "UPDATE STATISTICS",
+    ),
+    ("UPDATE STATISTICS dbo.Req SET ROWCOUNT 1", "UPDATE STATISTICS"),
+    ("UPDATE STATISTICS dbo.Req SET NOEXEC ON", "UPDATE STATISTICS"),
+    ("UPDATE STATISTICS dbo.Req SET CONTEXT_INFO 0x01", "UPDATE STATISTICS"),
+    ("UPDATE STATISTICS dbo.Req SET IDENTITY_INSERT t ON", "UPDATE STATISTICS"),
+    ("UPDATE STATISTICS dbo.Req WITH FULLSCAN", "UPDATE STATISTICS"),
+    ("UPDATE t SET a = 1 WHERE id = 1 SET ROWCOUNT 0", "Multiple statements"),
+    ("UPDATE t WHERE id = 1", "UPDATE requires SET"),
+    # S2: nested/composable DML at any depth is a second statement
+    (
+        "INSERT INTO log(id) SELECT id FROM (DELETE FROM Req OUTPUT deleted.id WHERE 1=1) AS d",
+        "Multiple statements",
+    ),
+    (
+        "INSERT INTO log(id) SELECT id FROM (MERGE Req USING u ON 1=1 "
+        "WHEN MATCHED THEN DELETE OUTPUT deleted.id) AS d",
+        "Multiple statements",
+    ),
+    (
+        "INSERT INTO log(id) SELECT id FROM (INSERT INTO Req OUTPUT inserted.id "
+        "DEFAULT VALUES) AS d",
+        "Multiple statements",
+    ),
+    # S3: bare \r after '--' must not silently end the comment
+    (
+        "DELETE FROM a WHERE 1=0 --\r(\n DELETE FROM b",
+        "Invalid SQL",
+    ),
+]
+
+
+class TestTokenValidationReadMode:
+    @pytest.mark.parametrize("sql", READ_ACCEPTED)
+    def test_accepted(self, sql):
+        assert validate_query(sql) == (True, "")
+
+    @pytest.mark.parametrize("sql,fragment", READ_REJECTED)
+    def test_rejected(self, sql, fragment):
+        valid, error = validate_query(sql)
+        assert not valid
+        assert fragment.lower() in error.lower()
+
+
+class TestTokenValidationModifyMode:
+    @pytest.mark.parametrize("sql", STATEMENT_ACCEPTED)
+    def test_accepted(self, sql):
+        assert validate_query(sql, allow_modifications=True) == (True, "")
+
+    @pytest.mark.parametrize("sql,fragment", STATEMENT_REJECTED)
+    def test_rejected(self, sql, fragment):
+        valid, error = validate_query(sql, allow_modifications=True)
+        assert not valid
+        assert fragment.lower() in error.lower()
+
+
+class TestNonAsciiKeywordBypass:
+    def test_dotless_i_union_is_rejected(self):
+        """F5: 'unıon'.upper() == 'UNION' in Python; must not be treated as UNION."""
+        valid, error = validate_query("SELECT 1 unıon SELECT 2")
+        assert not valid
+        assert "multiple statements" in error.lower()
+
+
+class TestStatementTypeErrorDoesNotLeakLiteral:
+    def test_string_literal_not_echoed(self):
+        """F6: the error names the token kind, not the literal's raw text."""
+        valid, error = validate_query("'123.456.789-00' x")
+        assert not valid
+        assert "123" not in error
+
+
+class TestIdentifierUnaffectedByStatementWords:
+    def test_table_named_print_still_valid(self):
+        from mcp_sql_server.security import validate_identifier
+
+        assert validate_identifier("Print") == (True, "")
+
+
+class TestUnicodeDecimalDigitInIdentifier:
+    def test_unicode_digit_identifier_is_single_word(self):
+        """C1: x١UNION must tokenize as one WORD, not split before UNION."""
+        from mcp_sql_server.sql_lexer import TokenKind, tokenize
+
+        tokens = tokenize("x١UNION")
+        assert len(tokens) == 1
+        assert tokens[0].kind is TokenKind.WORD
+
+    def test_unicode_digit_identifier_rejected_as_second_select(self):
+        valid, error = validate_query("SELECT 1 AS x١UNION SELECT 2")
+        assert not valid
+        assert "multiple statements" in error.lower()
+
+
+class TestValidateIdentifierTrailingNewline:
+    def test_trailing_newline_rejected(self):
+        """C3: re.match's '$' matches before a trailing \\n; must use fullmatch."""
+        assert validate_identifier("foo\n")[0] is False

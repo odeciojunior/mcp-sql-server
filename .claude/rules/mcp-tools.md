@@ -12,7 +12,8 @@
 | `get_view_definition` | Get SQL source of views | `view_name`, `schema` (default: dbo) |
 | `get_function_definition` | Get UDF source code | `function_name`, `schema` (default: dbo) |
 | `list_procedures` | List stored procedures | `schema` (optional) |
-| `execute_procedure` | Execute stored procedures | `proc_name`, `schema`, `params` (dict) |
+| `execute_procedure` | Execute stored procedures (runs read-only: any data changes are rolled back when the connection is returned to the pool) | `proc_name`, `schema`, `params` (dict) |
+| `list_databases` | List configured database connections | none |
 
 ## Resources
 
@@ -20,6 +21,7 @@
 - `sqlserver://database/info` - Database metadata (version, collation, edition)
 - `sqlserver://functions` - List of user-defined functions
 - `sqlserver://pool/stats` - Connection pool statistics
+- `sqlserver://databases` - All configured database connections
 
 ## API Response Format
 
@@ -28,6 +30,7 @@ All tools return consistent response structures:
 ```python
 # Query success
 {
+    "success": True,
     "columns": ["col1", "col2", ...],
     "rows": [{"col1": value, "col2": value}, ...],
     "row_count": 150,
@@ -38,6 +41,14 @@ All tools return consistent response structures:
 {
     "affected_rows": 5,
     "success": True
+}
+
+# Procedure success
+{
+    "success": True,
+    "results": [{"col1": value}, ...],
+    "row_count": 10,
+    "truncated": False  # True if more than 10,000 rows existed
 }
 
 # Error
@@ -69,8 +80,11 @@ execute_procedure(
 | Setting | Default | Maximum | Source |
 |---------|---------|---------|--------|
 | Query result rows | 1,000 | 10,000 | `execute_query` limit param |
+| Procedure result rows | 10,000 | 10,000 | `execute_procedure` (reports `truncated`) |
 | Query timeout | 120s | - | `config.py` QUERY_TIMEOUT |
 | Connection timeout | 30s | - | `config.py` TIMEOUT |
+
+`execute_query` runs SQL unmodified and caps rows server-side with `SET ROWCOUNT (limit+1)`, then `fetchmany`. CTEs and `ORDER BY` work.
 
 ## Connection Pooling
 

@@ -3407,3 +3407,274 @@ git branch -d feat/mcp-2x-migration
 
 - **Spec coverage:** §1.1 → Task 1; §1.2 → Task 2; §1.3 → Tasks 2, 4; §1.4 → Task 3; §1.5 → Task 4; §1.6 → Task 5; §1.6a → Task 6; §1.7 → Tasks 1–6; §2.1–2.4 → Task 7; §2.5 → Tasks 8, 9, 11; §2.6 → Tasks 7–9, 11; §3.1–3.2 → Tasks 10, 11; §3.3 → Tasks 6, 10, 12; §3.4 → Task 12; §3.5 → no change; §3.6 → Tasks 10–12; §4 → Tasks 2, 4, 5, 6, 9, 11, 12, 13; §5 → Tasks 4, 7, 9; §6 order preserved.
 - **Plan-time corrections recorded in the spec (revision 4):** `main()` reads `LOG_*` with `dotenv_values` instead of `load_dotenv` (preserves `DB_*` precedence); `execute_query` gains `server_limit` so procedures use `fetchmany` without `SET ROWCOUNT`; the reset uses two statements (`SET ROWCOUNT 0`, then `SELECT DB_NAME()`) to avoid depending on multi-statement result positioning; `ADD` and the `CONVERSATION` pairs added to the blocklists; `SELECT` after `VALUES` rejected in `execute_statement`; `list_databases` includes misconfigured aliases; `test_registry.py::test_from_env` rewritten.
+
+---
+
+## Addendum (found during Task 14 live check)
+
+The live check showed the server resolving the default database from `.env` `DB_*` even though `SQL_SERVER_*` was set: `get_database_names()` calls `load_dotenv()` before `DatabaseConfig.from_env()` snapshots "explicit" `DB_*`, so file values look explicit. This predates the branch. It also showed `ConnectionPool.acquire()` retrying a failing login every 100 ms. Tasks 15 and 16 fix both. Task 14 steps 4–5 run after them, and step 4 only once the user confirms `.env` no longer points at production.
+
+### Task 15: `.env` never written into `os.environ`
+
+**Files:**
+- Modify: `src/mcp_sql_server/config.py`
+- Modify: `tests/test_config_multi.py` (two fixtures patch `mcp_sql_server.config.load_dotenv`)
+- Test: `tests/test_config.py`, `tests/test_registry.py`
+- Docs: `CLAUDE.md` / `.claude/rules/sql-server-connection.md` only if they describe `load_dotenv` merging (check with grep)
+
+**Interfaces:**
+- Consumes: existing config API.
+- Produces (in `mcp_sql_server.config`):
+  - `_read_dotenv(env_path: Path | None) -> dict[str, str]` — the `.env` file's values (missing file → `{}`; `None` values dropped); never touches `os.environ`
+  - `_env(name: str, file_values: dict[str, str], default: str = "") -> str` — process env value if non-empty, else `.env` value if non-empty, else `default`
+  - Every loader (`PoolConfig.from_env`, `PoolConfig.from_env_prefixed`, `DatabaseConfig.from_env`, `DatabaseConfig.from_env_prefixed`, `get_database_names`, `get_query_dir`) reads through these; `load_dotenv` is no longer imported.
+  - Default-database precedence, unchanged in intent and now actually enforced: process `DB_*` > `SQL_SERVER_*` (process, then `.env`) > `.env` `DB_*`.
+
+- [ ] **Step 1: Write the failing regression tests**
+
+Append to `tests/test_config.py`:
+
+```python
+class TestDotenvNeverMutatesEnviron:
+    ENV_FILE = (
+        "DB_HOST=prod-host\nDB_USER=prod_user\nDB_PASSWORD=prod_pass\n"
+        "DB_NAME=ProdDb\nDB_DATABASES=archive\n"
+        "DB_ARCHIVE_HOST=a\nDB_ARCHIVE_USER=u\nDB_ARCHIVE_PASSWORD=p\nDB_ARCHIVE_NAME=n\n"
+    )
+    SQL_SERVER = {
+        "SQL_SERVER_HOST": "localhost",
+        "SQL_SERVER_USER": "dev",
+        "SQL_SERVER_PASSWORD": "devpass",
+        "SQL_SERVER_DATABASE": "dev-db",
+    }
+
+    def test_sql_server_beats_dotenv_after_get_database_names(self, tmp_path):
+        from mcp_sql_server.config import get_database_names
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, self.SQL_SERVER, clear=True):
+            assert get_database_names(env_file) == ["default", "archive"]
+            config = DatabaseConfig.from_env(env_path=env_file)
+        assert config.host == "localhost"
+        assert config.database == "dev-db"
+
+    def test_loaders_do_not_write_environ(self, tmp_path):
+        from mcp_sql_server.config import get_database_names, load_database_config, load_pool_config
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, self.SQL_SERVER, clear=True):
+            before = dict(os.environ)
+            get_database_names(env_file)
+            load_database_config("default", env_file)
+            load_database_config("archive", env_file)
+            load_pool_config("default", env_file)
+            load_pool_config("archive", env_file)
+            assert dict(os.environ) == before
+
+    def test_registry_uses_sql_server_over_dotenv(self, tmp_path):
+        from mcp_sql_server.registry import DatabaseRegistry
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, self.SQL_SERVER, clear=True):
+            registry = DatabaseRegistry.from_env(env_file)
+        info = {d["name"]: d for d in registry.get_database_info()}
+        assert info["default"]["host"] == "localhost"
+        assert info["archive"]["host"] == "a"
+
+    def test_process_db_still_beats_sql_server(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, {**self.SQL_SERVER, "DB_HOST": "explicit"}, clear=True):
+            assert DatabaseConfig.from_env(env_path=env_file).host == "explicit"
+
+    def test_dotenv_used_when_nothing_else_set(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, {}, clear=True):
+            assert DatabaseConfig.from_env(env_path=env_file).host == "prod-host"
+
+    def test_sql_server_in_dotenv_beats_db_in_dotenv(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE + "SQL_SERVER_HOST=file-sql-server\n")
+        with patch.dict(os.environ, {}, clear=True):
+            assert DatabaseConfig.from_env(env_path=env_file).host == "file-sql-server"
+```
+
+(`os`, `patch`, `DatabaseConfig` are already imported in `tests/test_config.py`; check the top of the file and add any that are missing.)
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `.venv/bin/pytest tests/test_config.py -q -k TestDotenvNeverMutatesEnviron`
+Expected: `test_sql_server_beats_dotenv_after_get_database_names`, `test_loaders_do_not_write_environ`, `test_registry_uses_sql_server_over_dotenv` FAIL (host is `prod-host`; environ gains `DB_*`).
+
+- [ ] **Step 3: Implement**
+
+In `src/mcp_sql_server/config.py`:
+
+Replace `from dotenv import load_dotenv` with `from dotenv import dotenv_values`, and add after `_parse_float`:
+
+```python
+def _read_dotenv(env_path: Path | None) -> dict[str, str]:
+    """Return the .env file's values without touching os.environ.
+
+    Loading .env into os.environ would make file values indistinguishable
+    from explicitly set ones and break the documented precedence.
+    """
+    values = dotenv_values(env_path or DEFAULT_ENV_PATH)
+    return {k: v for k, v in values.items() if v is not None}
+
+
+def _env(name: str, file_values: dict[str, str], default: str = "") -> str:
+    """Process env first, then the .env file, then default (empty counts as unset)."""
+    return os.environ.get(name) or file_values.get(name) or default
+```
+
+In each loader, replace the `if env_path is None: env_path = DEFAULT_ENV_PATH` + `load_dotenv(env_path)` lines with `file_values = _read_dotenv(env_path)`, and every `os.getenv(NAME, DEFAULT)` with `_env(NAME, file_values, DEFAULT)`. For example, `PoolConfig.from_env` becomes:
+
+```python
+        file_values = _read_dotenv(env_path)
+
+        return cls(
+            min_size=_parse_int(_env("DB_POOL_MIN_SIZE", file_values, "1"), "DB_POOL_MIN_SIZE"),
+            ...
+        )
+```
+
+and `DatabaseConfig.from_env` becomes:
+
+```python
+        file_values = _read_dotenv(env_path)
+
+        def _get(sql_server_key: str, db_key: str, default: str = "") -> str:
+            explicit = os.environ.get(db_key)
+            if explicit:
+                return explicit
+            value = _env(sql_server_key, file_values) or file_values.get(db_key)
+            return value if value else default
+```
+
+with `connection_timeout`/`query_timeout` using `_env("DB_TIMEOUT", file_values, "30")` / `_env("DB_QUERY_TIMEOUT", file_values, "120")`. Update its docstring to: "Precedence, highest first: 1. DB_* set in the process environment (explicit configuration, e.g. an MCP client's env block). 2. SQL_SERVER_* (process environment, then .env). 3. DB_* from the .env file. The .env file is read with dotenv_values and never merged into os.environ, so file values can never masquerade as explicit ones."
+
+`get_database_names`: `db_databases = _env("DB_DATABASES", _read_dotenv(env_path)).strip()`.
+
+`get_query_dir`: `query_dir_str = _env("QUERY_DIR", _read_dotenv(DEFAULT_ENV_PATH))`.
+
+In `tests/test_config_multi.py`, change both `with patch("mcp_sql_server.config.load_dotenv"):` lines to `with patch("mcp_sql_server.config._read_dotenv", return_value={}):`.
+
+- [ ] **Step 4: Run tests**
+
+Run: `.venv/bin/pytest tests/test_config.py tests/test_config_multi.py tests/test_registry.py tests/test_query_dir.py tests/test_server.py -q`
+Expected: all pass.
+
+- [ ] **Step 5: Docs**
+
+Run `grep -rn "load_dotenv\|merged into os.environ\|merges .env" README.md CLAUDE.md .claude/rules/` and update any sentence that says `.env` is loaded into the environment to say it is read without modifying the process environment. If nothing matches, no doc change.
+
+- [ ] **Step 6: Full suite, types, commit**
+
+Run: `.venv/bin/pytest tests/ -q && .venv/bin/python -m mypy src/mcp_sql_server/`
+
+```bash
+git add src/mcp_sql_server/config.py tests/test_config.py tests/test_config_multi.py
+git commit -m "fix(config): never merge .env into os.environ
+
+get_database_names() ran load_dotenv() before DatabaseConfig.from_env()
+snapshotted explicit DB_*, so .env DB_* outranked SQL_SERVER_* and the
+server could target the .env database instead of the configured one.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+### Task 16: Fail fast when no connection can be created
+
+**Files:**
+- Modify: `src/mcp_sql_server/pool.py` (`acquire`, creation-failure branch)
+- Test: `tests/test_pool.py`
+
+**Interfaces:**
+- Produces: `ConnectionPool.acquire()` re-raises the creation error immediately when the pool holds no connections at all (`_created_count == 0`); when other connections exist it keeps waiting for a release until `acquire_timeout` (existing behavior). `failed_acquisitions` still increments once per failed attempt.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_pool.py`:
+
+```python
+class TestCreationFailure:
+    def test_fails_fast_when_nothing_can_be_created(self, db_config):
+        cfg = PoolConfig(min_size=1, max_size=3, acquire_timeout=5.0)
+        with patch("pyodbc.connect", side_effect=pyodbc.Error("login failed")) as mock_connect:
+            pool = ConnectionPool(db_config, cfg)
+            started = time.monotonic()
+            with pytest.raises(pyodbc.Error, match="login failed"):
+                pool.acquire()
+            assert time.monotonic() - started < 1.0
+            # one pre-create attempt at init + one attempt in acquire
+            assert mock_connect.call_count <= 2
+            assert pool.stats()["failed_acquisitions"] == 1
+            pool.close()
+
+    def test_waits_when_other_connections_exist(self, db_config):
+        cfg = PoolConfig(min_size=1, max_size=2, acquire_timeout=0.5)
+        with patch("pyodbc.connect") as mock_connect:
+            mock_connect.return_value = MagicMock()
+            pool = ConnectionPool(db_config, cfg)
+            held = pool.acquire()
+            mock_connect.side_effect = pyodbc.Error("login failed")
+            with pytest.raises(TimeoutError):
+                pool.acquire()
+            pool.release(held)
+            pool.close()
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `.venv/bin/pytest tests/test_pool.py -q -k TestCreationFailure`
+Expected: `test_fails_fast_when_nothing_can_be_created` FAILS (TimeoutError after 5 s, ~50 connect calls).
+
+- [ ] **Step 3: Implement**
+
+In `ConnectionPool.acquire`, replace the creation-failure handler:
+
+```python
+                    except Exception as e:
+                        logger.warning(f"Failed to create new connection: {e}")
+                        with self._lock:
+                            self._failed_acquisitions += 1
+                        # Continue waiting for available connection
+                        continue
+```
+
+with:
+
+```python
+                    except Exception as e:
+                        logger.warning(f"Failed to create new connection: {e}")
+                        with self._lock:
+                            self._failed_acquisitions += 1
+                            nothing_to_wait_for = self._created_count == 0
+                        if nothing_to_wait_for:
+                            # No connection exists that could be released to
+                            # us; retrying would repeat the failing login
+                            # every poll until the timeout.
+                            raise
+                        # Others are checked out: wait for one to come back.
+                        continue
+```
+
+- [ ] **Step 4: Run tests, full suite, types, commit**
+
+Run: `.venv/bin/pytest tests/test_pool.py tests/test_database.py tests/test_concurrency.py -q && .venv/bin/pytest tests/ -q && .venv/bin/python -m mypy src/mcp_sql_server/`
+
+```bash
+git add src/mcp_sql_server/pool.py tests/test_pool.py
+git commit -m "fix(pool): fail fast when no connection can be created
+
+A failing login was retried every 100 ms until acquire_timeout
+(~10 attempts per query). Now the error surfaces immediately unless
+other connections exist that could be released.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```

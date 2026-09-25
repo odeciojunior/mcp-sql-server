@@ -443,3 +443,154 @@ class TestDatabaseConfigValidation:
                 database="",
             )
         assert "database" in str(exc_info.value)
+
+
+from unittest.mock import patch as _patch  # noqa: E402
+
+from mcp_sql_server.config import (  # noqa: E402
+    DEFAULT_ENV_PATH,
+    DatabaseConfig as _DatabaseConfig,
+    PoolConfig as _PoolConfig,
+    describe_config_error,
+    load_database_config,
+    load_pool_config,
+)
+
+
+class TestSafeConfigErrors:
+    def _env(self, **extra: str) -> dict[str, str]:
+        base = {"DB_HOST": "h", "DB_USER": "u", "DB_PASSWORD": "pw-secret", "DB_NAME": "d"}
+        base.update(extra)
+        return base
+
+    def test_bad_int_names_var_without_value(self, tmp_path):
+        with _patch.dict("os.environ", self._env(DB_TIMEOUT="s3cr3t!"), clear=True):
+            with pytest.raises(ValueError) as exc_info:
+                _DatabaseConfig.from_env(tmp_path / "none.env")
+        assert "DB_TIMEOUT" in str(exc_info.value)
+        assert "s3cr3t!" not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+    def test_bad_port_names_var_without_value(self, tmp_path):
+        with _patch.dict("os.environ", self._env(DB_PORT="s3cr3t!"), clear=True):
+            with pytest.raises(ValueError) as exc_info:
+                _DatabaseConfig.from_env(tmp_path / "none.env")
+        assert "PORT" in str(exc_info.value)
+        assert "s3cr3t!" not in str(exc_info.value)
+
+    def test_bad_pool_float(self, tmp_path):
+        with _patch.dict("os.environ", {"DB_POOL_ACQUIRE_TIMEOUT": "s3cr3t!"}, clear=True):
+            with pytest.raises(ValueError) as exc_info:
+                _PoolConfig.from_env(tmp_path / "none.env")
+        assert "DB_POOL_ACQUIRE_TIMEOUT" in str(exc_info.value)
+        assert "s3cr3t!" not in str(exc_info.value)
+
+    def test_describe_validation_error_has_no_values(self, tmp_path):
+        env = self._env(DB_PASSWORD="")
+        with _patch.dict("os.environ", env, clear=True):
+            try:
+                _DatabaseConfig.from_env(tmp_path / "none.env")
+            except ValueError as e:
+                message = describe_config_error(e)
+        assert message == "password: string_too_short"
+
+    def test_describe_pool_min_max(self, tmp_path):
+        with _patch.dict("os.environ", {"DB_POOL_MIN_SIZE": "9", "DB_POOL_MAX_SIZE": "1"}, clear=True):
+            try:
+                _PoolConfig.from_env(tmp_path / "none.env")
+            except ValueError as e:
+                message = describe_config_error(e)
+        assert message == "config: value_error"
+
+    def test_describe_plain_value_error(self):
+        assert describe_config_error(ValueError("DB_PORT must be an integer")) == "DB_PORT must be an integer"
+
+
+class TestPerAliasLoaders:
+    def test_default_alias_uses_from_env(self, tmp_path):
+        env = {"DB_HOST": "h", "DB_USER": "u", "DB_PASSWORD": "p", "DB_NAME": "d"}
+        with _patch.dict("os.environ", env, clear=True):
+            cfg = load_database_config("default", tmp_path / "none.env")
+        assert cfg.host == "h"
+
+    def test_named_alias_uses_prefix(self, tmp_path):
+        env = {"DB_X_HOST": "hx", "DB_X_USER": "u", "DB_X_PASSWORD": "p", "DB_X_NAME": "d"}
+        with _patch.dict("os.environ", env, clear=True):
+            cfg = load_database_config("x", tmp_path / "none.env")
+        assert cfg.host == "hx"
+
+    def test_pool_loader(self, tmp_path):
+        with _patch.dict("os.environ", {"DB_X_POOL_MAX_SIZE": "7"}, clear=True):
+            assert load_pool_config("x", tmp_path / "none.env").max_size == 7
+
+    def test_default_env_path_is_repo_root(self):
+        assert DEFAULT_ENV_PATH.name == ".env"
+        assert (DEFAULT_ENV_PATH.parent / "pyproject.toml").exists()
+
+
+class TestDotenvNeverMutatesEnviron:
+    ENV_FILE = (
+        "DB_HOST=prod-host\nDB_USER=prod_user\nDB_PASSWORD=prod_pass\n"
+        "DB_NAME=ProdDb\nDB_DATABASES=archive\n"
+        "DB_ARCHIVE_HOST=a\nDB_ARCHIVE_USER=u\nDB_ARCHIVE_PASSWORD=p\nDB_ARCHIVE_NAME=n\n"
+    )
+    SQL_SERVER = {
+        "SQL_SERVER_HOST": "localhost",
+        "SQL_SERVER_USER": "dev",
+        "SQL_SERVER_PASSWORD": "devpass",
+        "SQL_SERVER_DATABASE": "dev-db",
+    }
+
+    def test_sql_server_beats_dotenv_after_get_database_names(self, tmp_path):
+        from mcp_sql_server.config import get_database_names
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, self.SQL_SERVER, clear=True):
+            assert get_database_names(env_file) == ["default", "archive"]
+            config = DatabaseConfig.from_env(env_path=env_file)
+        assert config.host == "localhost"
+        assert config.database == "dev-db"
+
+    def test_loaders_do_not_write_environ(self, tmp_path):
+        from mcp_sql_server.config import get_database_names, load_database_config, load_pool_config
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, self.SQL_SERVER, clear=True):
+            before = dict(os.environ)
+            get_database_names(env_file)
+            load_database_config("default", env_file)
+            load_database_config("archive", env_file)
+            load_pool_config("default", env_file)
+            load_pool_config("archive", env_file)
+            assert dict(os.environ) == before
+
+    def test_registry_uses_sql_server_over_dotenv(self, tmp_path):
+        from mcp_sql_server.registry import DatabaseRegistry
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, self.SQL_SERVER, clear=True):
+            registry = DatabaseRegistry.from_env(env_file)
+        info = {d["name"]: d for d in registry.get_database_info()}
+        assert info["default"]["host"] == "localhost"
+        assert info["archive"]["host"] == "a"
+
+    def test_process_db_still_beats_sql_server(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, {**self.SQL_SERVER, "DB_HOST": "explicit"}, clear=True):
+            assert DatabaseConfig.from_env(env_path=env_file).host == "explicit"
+
+    def test_dotenv_used_when_nothing_else_set(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE)
+        with patch.dict(os.environ, {}, clear=True):
+            assert DatabaseConfig.from_env(env_path=env_file).host == "prod-host"
+
+    def test_sql_server_in_dotenv_beats_db_in_dotenv(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(self.ENV_FILE + "SQL_SERVER_HOST=file-sql-server\n")
+        with patch.dict(os.environ, {}, clear=True):
+            assert DatabaseConfig.from_env(env_path=env_file).host == "file-sql-server"

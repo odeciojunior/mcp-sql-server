@@ -61,12 +61,9 @@ To avoid "result exceeds maximum allowed tokens" errors:
 execute_query(sql="SELECT * FROM large_table", limit=100)
 ```
 
-### 2. Use TOP N for sampling:
-```sql
-SELECT TOP 100 * FROM (
-    -- original query here
-) AS results
-```
+### 2. Use the `limit` parameter for sampling:
+Use the `limit` parameter; the server caps rows with SET ROWCOUNT, so
+CTEs and ORDER BY work unmodified.
 
 ### 3. Best practices for large datasets:
 - Start with `SELECT COUNT(*)` to understand data volume

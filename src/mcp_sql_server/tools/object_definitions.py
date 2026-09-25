@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from ..errors import sanitize_error
 from ..security import sanitize_table_name
 from ..utils import get_db as _get_db
 
@@ -41,8 +42,8 @@ def get_view_definition(
             return {"success": True, "view": full_name, "definition": results[0]["definition"]}
         return {"error": f"View not found: {full_name}", "success": False}
     except Exception as e:
-        logger.error(f"Error getting view definition: {e}")
-        return {"error": str(e), "success": False}
+        logger.error(f"Error getting view definition: {sanitize_error(e)}")
+        return {"error": sanitize_error(e), "success": False}
 
 
 def get_function_definition(
@@ -77,5 +78,5 @@ def get_function_definition(
             return {"success": True, "function": full_name, "definition": results[0]["definition"]}
         return {"error": f"Function not found: {full_name}", "success": False}
     except Exception as e:
-        logger.error(f"Error getting function definition: {e}")
-        return {"error": str(e), "success": False}
+        logger.error(f"Error getting function definition: {sanitize_error(e)}")
+        return {"error": sanitize_error(e), "success": False}

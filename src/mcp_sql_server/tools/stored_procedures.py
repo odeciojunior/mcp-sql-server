@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 # Cache TTL for metadata queries (in seconds)
 METADATA_CACHE_TTL = 60
 
+# Maximum rows returned by execute_procedure. SET ROWCOUNT is not used here:
+# it would also limit INSERT/UPDATE/DELETE inside the procedure.
+MAX_PROCEDURE_ROWS = 10_000
+
 
 def list_procedures(
     schema: str | None = None,
@@ -38,8 +42,8 @@ def list_procedures(
         else:
             return _list_procedures_cached(None, database=database)
     except Exception as e:
-        logger.error(f"Error listing procedures: {e}")
-        return {"error": str(e), "success": False}
+        logger.error(f"Error listing procedures: {sanitize_error(e)}")
+        return {"error": sanitize_error(e), "success": False}
 
 
 @cached(ttl=METADATA_CACHE_TTL, key_prefix="list_procedures")
@@ -93,6 +97,10 @@ def execute_procedure(
 
     Returns:
         Dictionary with result sets
+
+    Note:
+        Runs read-only: any data changes made by the procedure are rolled
+        back when the connection is returned to the pool.
     """
     # Validate procedure name isn't a system procedure
     valid, error = validate_procedure_name(proc_name)
@@ -121,10 +129,18 @@ def execute_procedure(
                 param_placeholders = ", ".join(f"@{k} = ?" for k in params.keys())
                 sql = f"EXEC {full_name} {param_placeholders}"
                 param_values = tuple(params.values())
-                results = _get_db(database).execute_query(sql, param_values)
+                results = _get_db(database).execute_query(
+                    sql, param_values, max_rows=MAX_PROCEDURE_ROWS + 1
+                )
             else:
                 sql = f"EXEC {full_name}"
-                results = _get_db(database).execute_query(sql)
+                results = _get_db(database).execute_query(
+                    sql, max_rows=MAX_PROCEDURE_ROWS + 1
+                )
+
+            truncated = len(results) > MAX_PROCEDURE_ROWS
+            if truncated:
+                results = results[:MAX_PROCEDURE_ROWS]
 
             audit_logger.log_procedure(
                 proc_name=proc_name,
@@ -135,7 +151,12 @@ def execute_procedure(
                 database=database,
             )
 
-            return {"success": True, "results": results, "row_count": len(results)}
+            return {
+                "success": True,
+                "results": results,
+                "row_count": len(results),
+                "truncated": truncated,
+            }
         except Exception as e:
             error_msg = sanitize_error(e)
             logger.error(f"Error executing procedure: {error_msg}")

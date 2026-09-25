@@ -14,7 +14,7 @@ A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server
 - **Structured Logging** in JSON or text format with request correlation IDs
 - **Error Sanitization** that redacts IPs, credentials, and connection details from error messages
 - **Strict Type Safety** with full mypy strict mode compliance
-- **337 Tests** at 85%+ code coverage
+- **Comprehensive test suite** at 85%+ code coverage (no live database required)
 
 ## Architecture Overview
 
@@ -74,7 +74,7 @@ Cross-Cutting Concerns:
   security.py ......... SQL validation, keyword blocking, identifier checks
   cache.py ............ TTL cache with @cached decorator
   audit.py ............ Query hashing, execution timing, audit events
-  errors.py ........... Exception hierarchy, error sanitization
+  errors.py ........... Error sanitization and error responses
   logging_config.py ... Structured JSON/text logging, request correlation
 ```
 
@@ -88,9 +88,10 @@ Cross-Cutting Concerns:
 | `pool.py` | Thread-safe connection pooling with `Queue`, health checks, stale/idle retirement |
 | `config.py` | Pydantic `DatabaseConfig` and `PoolConfig` models, `.env` loading, multi-DB env parsing |
 | `security.py` | SQL validation, blocked keyword detection, identifier sanitization, bracket quoting |
+| `sql_lexer.py` | Dependency-free T-SQL tokenizer (words, strings, quoted identifiers, numbers, paren depth) used by validation and audit masking |
 | `cache.py` | `TTLCache` class with thread-safe get/set, `@cached` decorator, global metadata cache |
 | `audit.py` | `AuditLogger` for queries/statements/procedures, SQL hashing, `timed_operation()` context manager |
-| `errors.py` | `MCPError` hierarchy (`ValidationError`, `ConnectionError`, `QueryError`, `TimeoutError`), error sanitization |
+| `errors.py` | Error sanitization (credentials, IPs, echoed data values), simplification of common SQL Server errors, error-response builder |
 | `logging_config.py` | `StructuredFormatter` (JSON), `StandardFormatter` (text), request ID correlation via `ContextVar` |
 | `utils.py` | Lazy import helpers to break circular dependencies between tools/resources and server |
 | `tools/` | Tool implementations organized by domain (query, schema, objects, procedures, registry) |
@@ -310,6 +311,21 @@ There are two ways to provide database credentials to the server:
 
 Copy `.env.example` to `.env` at the repository root and configure your database connection.
 
+### Configuration Sources and Precedence
+
+The default database can be configured two ways:
+
+- `DB_*` variables, from the MCP client's `env` block or the `.env` file
+- `SQL_SERVER_*` variables (`SQL_SERVER_HOST`, `SQL_SERVER_PORT`, `SQL_SERVER_USER`, `SQL_SERVER_PASSWORD`, `SQL_SERVER_DATABASE`, `SQL_SERVER_DRIVER`, `SQL_SERVER_ENCRYPT`, `SQL_SERVER_TRUST_CERT`), typically set in `.claude/settings.local.json` for Claude Code
+
+Precedence, highest first:
+
+1. `DB_*` set in the process environment (e.g. by the MCP client)
+2. `SQL_SERVER_*`
+3. `DB_*` from `.env`
+
+Named databases (`DB_{ALIAS}_*`) do not read `SQL_SERVER_*`.
+
 ### Database Connection
 
 | Variable | Default | Required | Description |
@@ -343,6 +359,8 @@ Copy `.env.example` to `.env` at the repository root and configure your database
 | `LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LOG_FORMAT` | `text` | Output format (`text` or `json`) |
 
+`LOG_LEVEL` and `LOG_FORMAT` are read from the process environment first, then from `.env`.
+
 ### Query Files
 
 | Variable | Default | Description |
@@ -365,6 +383,10 @@ DB_POOL_MAX_SIZE=10
 LOG_LEVEL=INFO
 LOG_FORMAT=text
 ```
+
+### Startup Validation
+
+On startup the server checks every database's configuration and logs problems at `ERROR` (alias, field, and error type only; never values). The server still starts: a misconfigured database returns its configuration error when a tool targets it, and the other databases keep working.
 
 ## Multi-Database Support
 
@@ -437,7 +459,7 @@ Execute a read-only SELECT query against the database.
 | `limit` | `int` | `1000` | Max rows to return (1--10,000) |
 | `database` | `str` | `"default"` | Target database alias |
 
-The query is automatically wrapped with `SELECT TOP (limit+1) * FROM (query) AS _limited_query` to enforce server-side limiting. If more than `limit` rows exist, `truncated` is set to `True`.
+The SQL runs unmodified (CTEs, `ORDER BY`, and `UNION` all work). Rows are capped on the server with `SET ROWCOUNT (limit+1)` and read with `fetchmany`; the session is reset afterwards and any connection whose state cannot be restored is retired. If more than `limit` rows exist, `truncated` is set to `True`.
 
 **Response:**
 ```json
@@ -459,6 +481,8 @@ Execute a data modification statement (INSERT, UPDATE, DELETE).
 | `sql` | `str` | required | SQL statement (must start with `INSERT`, `UPDATE`, or `DELETE`) |
 | `params` | `list[str]` | `None` | Positional parameter values for `?` placeholders |
 | `database` | `str` | `"default"` | Target database alias |
+
+Only one statement is allowed per call; see [SQL Validation](#sql-validation).
 
 **Response:**
 ```json
@@ -569,6 +593,10 @@ Execute a stored procedure with optional named parameters.
 
 System procedures (`xp_*`, `sp_*`) are blocked. Parameter names are validated as safe identifiers.
 
+At most 10,000 rows are returned; the response includes `"truncated": true` when more rows existed. Only the first result set is read.
+
+Runs read-only: any data changes made by the procedure are rolled back when the connection is returned to the pool.
+
 **Example:**
 ```python
 execute_procedure(
@@ -586,12 +614,14 @@ List all configured database connections (no parameters).
 {
   "success": true,
   "databases": [
-    {"name": "default", "host": "server1", "port": 1433, "database": "MyDB"},
-    {"name": "analytics", "host": "server2", "port": 1433, "database": "AnalyticsDB"}
+    {"name": "default", "host": "server1", "port": 1433, "database": "MyDB", "status": "ok"},
+    {"name": "archive", "status": "misconfigured", "error": "password: string_too_short"}
   ],
   "count": 2
 }
 ```
+
+A database whose configuration is invalid is listed with `"status": "misconfigured"` and a value-free error. Calls that target it return that error; other databases keep working.
 
 ## Available Resources
 
@@ -609,22 +639,32 @@ Resources return formatted markdown strings for browsing database metadata.
 
 ### SQL Validation
 
-All queries and statements pass through security validation before execution.
+All queries and statements are tokenized before execution. Keywords inside string literals, quoted identifiers (`[...]`, `"..."`), and comments are ignored, so `WHERE note = 'DROP'` and leading `-- comments` are fine.
 
 **Blocked Keywords (DDL/DCL/Admin):**
 
 | Category | Keywords |
 |----------|----------|
 | DDL | `DROP`, `TRUNCATE`, `ALTER`, `CREATE` |
-| DCL | `GRANT`, `REVOKE` |
-| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL` |
+| DCL | `GRANT`, `REVOKE`, `DENY` |
+| Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL`, `RECONFIGURE`, `CHECKPOINT` |
 | External Access | `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `BULK` |
+| Dynamic SQL / control flow | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD` |
+| Legacy text/image | `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
+| Side effects | `NEXT VALUE FOR`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION` |
+| File readers | `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `fn_get_audit_file_v2`, `fn_dump_dblog`, `fn_dump_dblog_xtp`, `fn_xe_telemetry_blob_target_read_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
 
 **Blocked Prefixes:** `xp_*`, `sp_*` (system stored procedures)
 
-**Statement Type Enforcement:**
-- `execute_query` only accepts `SELECT` and `WITH` as the first keyword
-- `execute_statement` only accepts `INSERT`, `UPDATE`, and `DELETE`
+**One statement per call.** T-SQL does not need `;` between statements, so the validator allows only one statement at the top level (outside parentheses). A single trailing `;` is fine.
+
+- `execute_query` accepts only `SELECT` or `WITH` first, rejects `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `INTO`, and `SET` anywhere, and allows a second top-level `SELECT` only after `UNION`, `EXCEPT`, or `INTERSECT`.
+- `execute_statement` accepts only `INSERT`, `UPDATE`, or `DELETE` first. `SET` is allowed once in an `UPDATE`, and must come before any top-level `FROM`, `WHERE`, `OUTPUT`, or `OPTION`; a top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` or `OUTPUT ... INTO`. `UPDATE STATISTICS` is rejected outright. Nested (composable) DML is not allowed.
+- CTE-prefixed DML (`WITH c AS (...) DELETE ...`) is not supported by either tool.
+
+Unbracketed column names that match a blocked word (for example `Send`, `Receive`, `Open`) must be written in brackets: `[Send]`.
+
+**Use a read-only login.** The validator is defense in depth. For read-only use, connect with a login that only has `db_datareader`.
 
 ### Identifier Validation
 
@@ -640,6 +680,9 @@ Error messages are automatically scrubbed to remove:
 - IP addresses
 - Usernames and passwords
 - Connection string details (SERVER, UID, PWD)
+- Data values SQL Server echoes in errors: duplicate key values (2627/2601), truncated values (2628), and values in conversion failures (245)
+
+Object names (e.g. `Invalid object name 'dbo.Req'`) are kept for debugging.
 
 ## Connection Pooling
 
@@ -677,7 +720,7 @@ Schema metadata queries (`list_tables`, `describe_table`, `list_procedures`) are
 
 - Thread-safe get/set/invalidate/clear operations via `threading.Lock`
 - Automatic expiration on access (lazy cleanup)
-- `@cached` decorator for transparent function-level caching with key generation from arguments
+- `@cached` decorator for transparent function-level caching; keys bind arguments to the function signature, so positional and keyword calls share an entry
 - Global `invalidate_metadata_cache()` to clear all cached entries
 - `cleanup_expired()` for bulk removal of stale entries
 - `stats()` method returning total, valid, and expired entry counts
@@ -688,35 +731,25 @@ Schema metadata queries (`list_tables`, `describe_table`, `list_procedures`) are
 
 The `AuditLogger` tracks all database operations:
 
-- **Queries:** SQL hash, preview (first 100 chars), duration, row count, truncation status, target database
-- **Statements:** SQL hash, statement type (INSERT/UPDATE/DELETE), duration, affected rows, target database
+- **Queries:** SQL hash, masked preview (first 100 chars), duration, row count, truncation status, target database
+- **Statements:** SQL hash, masked preview, statement type (INSERT/UPDATE/DELETE), duration, affected rows, target database
 - **Procedures:** Procedure name, schema, duration, row count, target database
-- **Validation Failures:** SQL hash, short preview, blocked keyword, target database
+- **Validation Failures:** SQL hash, short masked preview, error, target database
 
-SQL content is hashed with SHA-256 (first 16 chars) for privacy-preserving audit trails.
+Previews replace every string and numeric literal with `?` and drop comments (`WHERE cpf = '123'` → `WHERE cpf = ?`). `sql_hash` is the first 16 hex chars of the SHA-256 of the masked SQL: a query-shape fingerprint, so queries that differ only in literal values share a hash and the values cannot be recovered from it.
 
 ### Structured Logging
 
 Two output formats controlled by `LOG_FORMAT`:
 
-- **`text`** (default): `2024-01-15 10:30:00 - module.name - INFO - message`
-- **`json`**: `{"timestamp": "...", "level": "INFO", "logger": "...", "message": "...", "request_id": "..."}`
+- **`text`** (default): `2024-01-15 10:30:00 - module.name - INFO - [3f2a9c1b7d4e] message`
+- **`json`**: `{"timestamp": "...", "level": "INFO", "logger": "...", "message": "...", "request_id": "3f2a9c1b7d4e"}`
 
-Request correlation IDs are tracked via `contextvars.ContextVar` for tracing operations across components.
+Every tool call gets a 12-character `request_id`, so all log lines from one call (including audit events) share it. Lines outside a tool call show `-` (text) or omit the field (JSON).
 
 ### Error Handling
 
-Custom exception hierarchy with consistent response format:
-
-```
-MCPError
-  +-- ValidationError   (blocked keyword, invalid SQL)
-  +-- ConnectionError   (database unreachable)
-  +-- QueryError        (execution failure)
-  +-- TimeoutError      (operation timed out)
-```
-
-All exceptions produce sanitized error responses:
+Tools never raise to the client. Every failure is returned as a sanitized error dictionary:
 ```json
 {
   "success": false,
@@ -729,7 +762,7 @@ Common SQL Server errors are automatically simplified (e.g., `"Invalid object na
 
 ## Testing
 
-The test suite contains 369 tests covering all modules.
+The test suite covers all modules with mocked database connections; run it to see the current count.
 
 ```bash
 # Run all tests
@@ -757,7 +790,13 @@ The test suite contains 369 tests covering all modules.
 | `test_registry.py` | `DatabaseRegistry` lazy init, get/close, `from_env()` |
 | `test_security.py` | SQL validation, blocked keywords, identifier checks |
 | `test_cache.py` | TTL cache operations, expiry, `@cached` decorator, thread safety |
-| `test_inject_top_clause.py` | TOP clause injection for server-side limiting |
+| `test_server_registration.py` | MCP SDK registration surface (tool/resource names, schemas) |
+| `test_concurrency.py` | Parallel pool/registry access and per-call request IDs |
+| `test_sql_lexer.py` | T-SQL tokenizer: strings, identifiers, comments, depth |
+| `test_audit.py` | Masked SQL previews and query-shape hashes |
+| `test_errors.py` | Error sanitization and value redaction |
+| `test_logging_config.py` | Text/JSON formats, request ID propagation |
+| `test_utils.py` | Lazy server accessors |
 | `test_query_dir.py` | Query directory resolution and file loading |
 | `conftest.py` | Shared pytest fixtures (mock database, config objects) |
 
@@ -790,20 +829,21 @@ pyproject.toml                             # Package metadata, dependencies, myp
 |       +-- config.py                      # Pydantic configs, .env loading, multi-DB support
 |       +-- registry.py                    # DatabaseRegistry for named database management
 |       +-- security.py                    # SQL validation, keyword blocking
+|       +-- sql_lexer.py                   # T-SQL tokenizer for validation and masking
 |       +-- cache.py                       # TTLCache and @cached decorator
 |       +-- audit.py                       # AuditLogger, SQL hashing, timed_operation
 |       +-- errors.py                      # Exception hierarchy, error sanitization
 |       +-- logging_config.py              # Structured/standard formatters, request IDs
 |       +-- utils.py                       # Lazy import helpers (circular dep avoidance)
 |       +-- tools/
-|       |   +-- __init__.py                # Tool exports (ALL_TOOLS)
+|       |   +-- __init__.py                # Tool exports
 |       |   +-- query_execution.py         # execute_query, execute_statement, execute_query_file
 |       |   +-- schema_discovery.py        # list_tables, describe_table
 |       |   +-- object_definitions.py      # get_view_definition, get_function_definition
 |       |   +-- stored_procedures.py       # list_procedures, execute_procedure
 |       |   +-- registry_tools.py          # list_databases
 |       +-- resources/
-|           +-- __init__.py                # Resource exports (ALL_RESOURCES)
+|           +-- __init__.py                # Resource exports
 |           +-- database_info.py           # tables, db info, functions, pool stats, databases
 +-- tests/
     +-- conftest.py                        # Shared fixtures
@@ -815,7 +855,13 @@ pyproject.toml                             # Package metadata, dependencies, myp
     +-- test_registry.py                   # DatabaseRegistry tests
     +-- test_security.py                   # Security validation tests
     +-- test_cache.py                      # TTLCache tests
-    +-- test_inject_top_clause.py          # TOP clause injection tests
+    +-- test_server_registration.py        # MCP registration surface tests
+    +-- test_concurrency.py                # Thread-safety tests
+    +-- test_sql_lexer.py                  # Tokenizer tests
+    +-- test_audit.py                      # Audit masking tests
+    +-- test_errors.py                     # Error sanitization tests
+    +-- test_logging_config.py             # Logging tests
+    +-- test_utils.py                      # Lazy accessor tests
     +-- test_query_dir.py                  # Query directory tests
 ```
 

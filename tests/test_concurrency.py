@@ -6,8 +6,8 @@ anyio.to_thread.run_sync(), so tool calls can now execute genuinely in
 parallel. These tests exercise the paths that concurrency newly reaches.
 
 The tool path is DatabaseManager.get_cursor() -> ConnectionPool.connection(),
-which is lock-protected. DatabaseManager.connect() is not, but it is deprecated
-when pooling is enabled and is not on the tool path -- see its docstring.
+which is lock-protected. DatabaseManager.connect() raises when pooling is
+enabled, so it is not reachable from tools.
 """
 
 import threading
@@ -159,6 +159,40 @@ class TestDatabaseManagerConcurrentCursors:
             manager.close()
 
 
+class TestDatabaseManagerPoolCreationRace:
+    """P1: DatabaseManager._get_pool() must not construct more than one pool
+    when several threads race on the first call."""
+
+    def test_concurrent_get_pool_creates_one_pool(self, db_config, pool_config):
+        import time
+
+        manager = DatabaseManager(db_config, pool_config)
+        created: list[MagicMock] = []
+        created_lock = threading.Lock()
+
+        def make_pool(*args, **kwargs):
+            time.sleep(0.1)
+            pool = MagicMock()
+            with created_lock:
+                created.append(pool)
+            return pool
+
+        results: list[int] = []
+        results_lock = threading.Lock()
+
+        def worker() -> None:
+            pool = manager._get_pool()
+            with results_lock:
+                results.append(id(pool))
+
+        with patch("mcp_sql_server.database.ConnectionPool", side_effect=make_pool):
+            errors = _run_concurrently(worker, workers=8)
+
+        assert errors == []
+        assert len(created) == 1, f"ConnectionPool constructed {len(created)} times"
+        assert len(set(results)) == 1, "threads got different pool objects"
+
+
 class TestRegistryConcurrentGet:
     """Lazy manager creation in DatabaseRegistry must be atomic."""
 
@@ -199,3 +233,24 @@ class TestRegistryConcurrentGet:
         errors = _run_concurrently(worker)
         assert errors == []
         registry.close()
+
+
+class TestRequestIdIsolation:
+    def test_concurrent_calls_get_distinct_ids(self):
+        from mcp_sql_server.logging_config import request_id_var, with_request_id
+
+        seen: list[str | None] = []
+        seen_lock = threading.Lock()
+        barrier = threading.Barrier(WORKERS)
+
+        @with_request_id
+        def tool() -> None:
+            barrier.wait(timeout=10)  # all calls are in flight at once
+            with seen_lock:
+                seen.append(request_id_var.get())
+
+        errors = _run_concurrently(tool)
+        assert errors == []
+        assert len(seen) == WORKERS
+        assert None not in seen
+        assert len(set(seen)) == WORKERS

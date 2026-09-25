@@ -1,5 +1,6 @@
 """Simple TTL-based cache utility for metadata queries."""
 
+import inspect
 import logging
 import threading
 import time
@@ -156,17 +157,18 @@ def cached(ttl: int | None = None, key_prefix: str = "") -> Callable[[Callable[.
         Decorator function.
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        signature = inspect.signature(func)
+        prefix = key_prefix or func.__name__
+
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> T:
             cache = get_metadata_cache()
 
-            # Build cache key from function name and arguments
-            key_parts = [key_prefix or func.__name__]
-            if args:
-                key_parts.extend(str(arg) for arg in args)
-            if kwargs:
-                key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
-            cache_key = ":".join(key_parts)
+            # Bind to the signature so f("x", "dbo") and f("x", schema="dbo")
+            # share a key; repr() keeps argument boundaries unambiguous.
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            cache_key = f"{prefix}|{sorted(bound.arguments.items())!r}"
 
             # Try to get from cache
             value, found = cache.get(cache_key)

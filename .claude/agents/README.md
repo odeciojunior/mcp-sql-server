@@ -195,7 +195,7 @@ All agents use a consistent 4-level severity scale:
 
 ## Knowledge Base Reference
 
-**Location:** `docs/lessons/`
+**Location:** `/home/odecio/projects/sql-playground/docs/lessons/` (in the sql-playground repository)
 
 **Contents:** 20 lessons covering:
 - Gotchas (reserved keywords, temp table compilation, Unicode strings)
@@ -203,7 +203,7 @@ All agents use a consistent 4-level severity scale:
 - Optimizations (CTE pitfalls, FORMAT vs CONVERT, EXISTS vs IN)
 - Bug-fixes (SQL Agent QUOTED_IDENTIFIER, @@ROWCOUNT timing)
 
-**Index:** `docs/lessons/INDEX.md` - Start here for topic-based navigation
+**Index:** `/home/odecio/projects/sql-playground/docs/lessons/INDEX.md` - Start here for topic-based navigation
 
 ## Agent File Format
 
