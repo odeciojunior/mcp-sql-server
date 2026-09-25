@@ -46,7 +46,7 @@ def _is_word_start(ch: str) -> bool:
 
 
 def _is_word_char(ch: str) -> bool:
-    return ch in "_@#$" or ch in _ASCII_DIGITS or ch.isalpha()
+    return ch in "_@#$" or ch in _ASCII_DIGITS or ch.isalpha() or ch.isdecimal()
 
 
 def _scan_delimited(sql: str, pos: int, close: str, what: str) -> int:
@@ -138,6 +138,12 @@ def tokenize(sql: str) -> list[Token]:
         if sql.startswith("--", i):
             while i < n and sql[i] not in "\r\n":
                 i += 1
+            if i < n and sql[i] == "\r" and not (i + 1 < n and sql[i + 1] == "\n"):
+                # A bare \r (not part of a \r\n pair) is ambiguous: rather than
+                # guess whether the comment ends there, refuse (fail closed) so
+                # text after it can't be silently uncommented by a mismatch
+                # with SQL Server's own line-ending handling.
+                raise LexError("bare carriage return after line comment")
             continue
         if sql.startswith("/*", i):
             i = _scan_block_comment(sql, i)

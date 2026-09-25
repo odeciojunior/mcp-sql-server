@@ -106,6 +106,10 @@ class TestNumbers:
     def test_non_ascii_digits_are_not_numbers(self):
         assert tokenize("١٢٣")[0].kind is not TokenKind.NUMBER
 
+    def test_non_ascii_decimal_digit_extends_word(self):
+        """C1: SQL Server identifiers may include Unicode decimal digits."""
+        assert kinds("x١UNION") == [(W, "x١UNION")]
+
     def test_malformed_exponent_sign_with_no_digit_raises(self):
         with pytest.raises(LexError, match="malformed number exponent"):
             tokenize("SELECT 1e--x")
@@ -138,8 +142,16 @@ class TestCommentsAndWhitespace:
             (W, "SELECT"), (N, "1"), (W, "FROM"), (W, "t"),
         ]
 
-    def test_line_comment_ends_at_carriage_return(self):
-        assert kinds("SELECT 1 --x\rDELETE") == [(W, "SELECT"), (N, "1"), (W, "DELETE")]
+    def test_bare_carriage_return_after_line_comment_raises(self):
+        """S3: a bare \\r (not part of \\r\\n) must not end a '--' comment,
+        or text after it could be silently uncommented."""
+        with pytest.raises(LexError, match="bare carriage return"):
+            tokenize("SELECT 1 --x\rDELETE")
+
+    def test_crlf_after_line_comment_ends_comment(self):
+        assert kinds("SELECT 1 --x\r\nFROM t") == [
+            (W, "SELECT"), (N, "1"), (W, "FROM"), (W, "t"),
+        ]
 
     def test_block_comment_skipped(self):
         assert kinds("SELECT /* DROP */ 1") == [(W, "SELECT"), (N, "1")]

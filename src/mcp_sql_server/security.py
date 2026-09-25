@@ -55,6 +55,10 @@ BLOCKED_FUNCTIONS: set[str] = {
     "FN_XE_FILE_TARGET_READ_FILE",
     "FN_TRACE_GETTABLE",
     "FN_GET_AUDIT_FILE",
+    "FN_GET_AUDIT_FILE_V2",
+    "FN_DUMP_DBLOG",
+    "FN_DUMP_DBLOG_XTP",
+    "FN_XE_TELEMETRY_BLOB_TARGET_READ_FILE",
     "DM_OS_FILE_EXISTS",
     "DM_OS_ENUMERATE_FILESYSTEM",
 }
@@ -130,24 +134,49 @@ def _check_read_query(tokens: list[Token]) -> tuple[bool, str]:
     return True, ""
 
 
+# Structural words that end the SET clause of an UPDATE statement: a
+# depth-0 SET seen after one of these is a second, stacked statement rather
+# than part of the UPDATE (T-SQL does not require ';' between statements).
+_UPDATE_SET_STOP_WORDS: set[str] = {"FROM", "WHERE", "OUTPUT", "OPTION"}
+
+
 def _check_modify_statement(tokens: list[Token]) -> tuple[bool, str]:
     first = tokens[0].upper
+    if (
+        first == "UPDATE"
+        and len(tokens) > 1
+        and tokens[1].kind is TokenKind.WORD
+        and tokens[1].upper == "STATISTICS"
+    ):
+        # "UPDATE STATISTICS ..." is a maintenance command, not an UPDATE
+        # DML statement with a SET clause; anything after it (e.g. a SET
+        # session option) is a second, stacked statement.
+        return False, "Statement not allowed: UPDATE STATISTICS"
+
     set_seen = False
     select_seen = False
     values_seen = False
     output_seen = False
     output_into_used = False
+    update_set_stopped = False
     for idx, tok in enumerate(tokens):
         if idx == 0 or tok.kind is not TokenKind.WORD:
             continue
         word = tok.upper
         struct_word = _structural_word(tok)
-        if word in _DML_WORDS and tok.depth == 0:
+        if word in _DML_WORDS:
+            # A DML word anywhere but token 0 (any depth) means a second,
+            # composable/nested statement (e.g. INSERT ... SELECT ... FROM
+            # (DELETE ... OUTPUT ...) AS d).
             return False, _MULTIPLE
         if struct_word == "SET":
-            if first != "UPDATE" or set_seen or tok.depth != 0:
+            if first != "UPDATE" or set_seen or tok.depth != 0 or update_set_stopped:
                 return False, _MULTIPLE
             set_seen = True
+        elif first == "UPDATE" and tok.depth == 0 and struct_word in _UPDATE_SET_STOP_WORDS:
+            update_set_stopped = True
+            if struct_word == "OUTPUT":
+                output_seen = True
         elif struct_word in ("VALUES", "DEFAULT") and tok.depth == 0:
             values_seen = True
         elif struct_word == "SELECT" and tok.depth == 0:
@@ -165,6 +194,9 @@ def _check_modify_statement(tokens: list[Token]) -> tuple[bool, str]:
                 output_into_used = True
                 continue
             return False, "INTO not allowed here"
+
+    if first == "UPDATE" and not set_seen:
+        return False, "UPDATE requires SET"
     return True, ""
 
 
@@ -199,6 +231,21 @@ def validate_query(sql: str, allow_modifications: bool = False) -> tuple[bool, s
     for idx, tok in enumerate(tokens):
         if tok.kind is TokenKind.SEMICOLON and idx != last:
             return False, _MULTIPLE
+
+    # Depth tracking clamps a stray ')' to 0 instead of going negative, so an
+    # unbalanced-parens input can otherwise hide tokens at a lower depth than
+    # they actually are (or vice versa). Walk the raw '(' / ')' OTHER tokens
+    # ourselves to catch that rather than trusting Token.depth here.
+    paren_balance = 0
+    for tok in tokens:
+        if tok.kind is TokenKind.OTHER and tok.text == "(":
+            paren_balance += 1
+        elif tok.kind is TokenKind.OTHER and tok.text == ")":
+            paren_balance -= 1
+            if paren_balance < 0:
+                return False, "Unbalanced parentheses"
+    if paren_balance != 0:
+        return False, "Unbalanced parentheses"
 
     words = [t for t in tokens if t.kind is TokenKind.WORD]
 
@@ -259,7 +306,7 @@ def validate_identifier(name: str) -> tuple[bool, str]:
 
     # SQL Server identifier rules: starts with letter or underscore
     pattern = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
-    if not re.match(pattern, name):
+    if not re.fullmatch(pattern, name):
         return False, f"Invalid identifier: {name}"
 
     # Check for reserved words
