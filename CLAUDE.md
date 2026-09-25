@@ -136,7 +136,7 @@ Each alias reads prefixed env vars (`DB_{ALIAS}_*`) and gets independent pool co
 | Admin | `SHUTDOWN`, `BACKUP`, `RESTORE`, `DBCC`, `KILL`, `RECONFIGURE`, `CHECKPOINT` |
 | External | `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `BULK` |
 | Statement starters | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD`, `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
-| Pairs / functions | `NEXT VALUE`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION`, `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
+| Pairs / functions | `NEXT VALUE`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION`, `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `fn_get_audit_file_v2`, `fn_dump_dblog`, `fn_dump_dblog_xtp`, `fn_xe_telemetry_blob_target_read_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
 | System Procs | `xp_*`, `sp_*` prefixes |
 
 Validation tokenizes SQL (`sql_lexer.py`); strings, quoted identifiers, and comments are never checked for keywords.

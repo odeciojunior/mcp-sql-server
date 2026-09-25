@@ -595,6 +595,8 @@ System procedures (`xp_*`, `sp_*`) are blocked. Parameter names are validated as
 
 At most 10,000 rows are returned; the response includes `"truncated": true` when more rows existed. Only the first result set is read.
 
+Runs read-only: any data changes made by the procedure are rolled back when the connection is returned to the pool.
+
 **Example:**
 ```python
 execute_procedure(
@@ -650,14 +652,14 @@ All queries and statements are tokenized before execution. Keywords inside strin
 | Dynamic SQL / control flow | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD` |
 | Legacy text/image | `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
 | Side effects | `NEXT VALUE FOR`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION` |
-| File readers | `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
+| File readers | `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `fn_get_audit_file_v2`, `fn_dump_dblog`, `fn_dump_dblog_xtp`, `fn_xe_telemetry_blob_target_read_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
 
 **Blocked Prefixes:** `xp_*`, `sp_*` (system stored procedures)
 
 **One statement per call.** T-SQL does not need `;` between statements, so the validator allows only one statement at the top level (outside parentheses). A single trailing `;` is fine.
 
 - `execute_query` accepts only `SELECT` or `WITH` first, rejects `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `INTO`, and `SET` anywhere, and allows a second top-level `SELECT` only after `UNION`, `EXCEPT`, or `INTERSECT`.
-- `execute_statement` accepts only `INSERT`, `UPDATE`, or `DELETE` first. `SET` is allowed once in an `UPDATE`; a top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` or `OUTPUT ... INTO`. `execute_statement` also accepts composable DML inside parentheses (e.g. `INSERT ... SELECT * FROM (DELETE ... OUTPUT ...) d`).
+- `execute_statement` accepts only `INSERT`, `UPDATE`, or `DELETE` first. `SET` is allowed once in an `UPDATE`, and must come before any top-level `FROM`, `WHERE`, `OUTPUT`, or `OPTION`; a top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` or `OUTPUT ... INTO`. `UPDATE STATISTICS` is rejected outright. Nested (composable) DML is not allowed.
 - CTE-prefixed DML (`WITH c AS (...) DELETE ...`) is not supported by either tool.
 
 Unbracketed column names that match a blocked word (for example `Send`, `Receive`, `Open`) must be written in brackets: `[Send]`.
