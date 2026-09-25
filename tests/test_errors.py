@@ -77,6 +77,53 @@ class TestValueRedaction:
         assert "Silva" not in out
 
 
+    def test_duplicate_key_with_both_quotes(self):
+        """Test that duplicate key redaction works when value has both ' and \" (escape as \')."""
+        # Simulate pyodbc.Error repr: single quotes are escaped as \'
+        msg = (
+            "Violation of PRIMARY KEY constraint 'PK_Cliente'. Cannot insert duplicate key "
+            'in object \'dbo.Cliente\'. The duplicate key value is (se"cret O\'Brien 123).'
+        )
+        out = sanitize_error(msg)
+        assert "Brien" not in out
+        assert "123" not in out
+        assert "se" not in out or "se\"cret" not in out  # at least the mixed part is redacted
+
+    def test_truncated_value_with_both_quotes(self):
+        """Test truncated-value redaction when value has both ' and \"."""
+        # Value: se"cret with an apostrophe inside
+        msg = 'Truncated value: \'se"cret O\'Brien 123.456.789-00\'.'
+        out = sanitize_error(msg)
+        assert "Brien" not in out
+        assert "123.456" not in out
+        assert "Truncated value: '[REDACTED]'" in out
+
+    def test_conversion_failed_with_both_quotes(self):
+        """Test conversion (245) redaction when value has both ' and \"."""
+        # This mimics what pyodbc.Error's repr does: escapes ' as \'
+        msg = (
+            "Conversion failed when converting the nvarchar value "
+            '\'ab"c O\'Brien 123.456.789-00\' to data type int. (245)'
+        )
+        out = sanitize_error(msg)
+        assert "Brien" not in out
+        assert "123.456" not in out
+        assert "ab" not in out or 'ab"c' not in out  # at least distinctive parts are gone
+        assert "the nvarchar value '[REDACTED]' to data type int" in out
+
+    def test_overflow_248_with_both_quotes(self):
+        """Test overflow (248) redaction when value has both ' and \"."""
+        msg = (
+            "The conversion of the varchar value "
+            '\'secret"password O\'Brien 123.456.789-00\' overflowed an int column.'
+        )
+        out = sanitize_error(msg)
+        assert "Brien" not in out
+        assert "123.456" not in out
+        assert "secret" not in out or 'secret"' not in out  # at least distinctive parts
+        assert "the varchar value '[REDACTED]' overflowed an int column" in out
+
+
 @pytest.mark.parametrize(
     "name", ["MCPError", "ValidationError", "ConnectionError", "QueryError", "TimeoutError"]
 )

@@ -25,14 +25,14 @@ SENSITIVE_PATTERNS: list[tuple[str, str, int]] = [
         "The duplicate key value is ([REDACTED])",
         re.IGNORECASE | re.DOTALL,
     ),
-    (r"Truncated value: '.*'", "Truncated value: '[REDACTED]'", re.IGNORECASE | re.DOTALL),
+    (r"Truncated value: \\?'.*\\?'", "Truncated value: '[REDACTED]'", re.IGNORECASE | re.DOTALL),
     (
-        r"(Conversion failed when converting the [\w ]+? value )'.*'( to data type)",
+        r"(Conversion failed when converting the [\w ]+? value )\\?'.*\\?'( to data type)",
         r"\1'[REDACTED]'\2",
         re.IGNORECASE | re.DOTALL,
     ),
     (
-        r"(The conversion of the [\w ]+? value )'.*'( overflowed)",
+        r"(The conversion of the [\w ]+? value )\\?'.*\\?'( overflowed)",
         r"\1'[REDACTED]'\2",
         re.IGNORECASE | re.DOTALL,
     ),
