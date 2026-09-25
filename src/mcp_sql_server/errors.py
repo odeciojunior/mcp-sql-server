@@ -4,26 +4,37 @@ import re
 from typing import Any
 
 
-# Patterns for sensitive information that should be sanitized
-SENSITIVE_PATTERNS = [
+# Patterns for sensitive information that should be sanitized.
+# Each entry is (pattern, replacement, flags). flags defaults to
+# re.IGNORECASE when omitted (2-tuples below); patterns whose data value can
+# contain embedded newlines (echoed literals in constraint/conversion
+# errors) also need re.DOTALL so '.' matches across them, otherwise the
+# value leaks past the first line break.
+SENSITIVE_PATTERNS: list[tuple[str, str, int]] = [
     # Login/auth errors - hide username
-    (r"Login failed for user '([^']+)'", "Login failed for user '[REDACTED]'"),
+    (r"Login failed for user '([^']+)'", "Login failed for user '[REDACTED]'", re.IGNORECASE),
     # Connection string details
-    (r"SERVER=([^;]+)", "SERVER=[REDACTED]"),
-    (r"UID=([^;]+)", "UID=[REDACTED]"),
-    (r"PWD=([^;]+)", "PWD=[REDACTED]"),
+    (r"SERVER=([^;]+)", "SERVER=[REDACTED]", re.IGNORECASE),
+    (r"UID=([^;]+)", "UID=[REDACTED]", re.IGNORECASE),
+    (r"PWD=([^;]+)", "PWD=[REDACTED]", re.IGNORECASE),
     # IP addresses
-    (r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "[REDACTED_IP]"),
+    (r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "[REDACTED_IP]", re.IGNORECASE),
     # Data values echoed by SQL Server in constraint/conversion errors
-    (r"The duplicate key value is \([^\r\n]*\)", "The duplicate key value is ([REDACTED])"),
-    (r"Truncated value: '(?:[^']|'')*'", "Truncated value: '[REDACTED]'"),
     (
-        r"(Conversion failed when converting the [\w ]+? value )'(?:[^']|'')*'",
-        r"\1'[REDACTED]'",
+        r"The duplicate key value is \(.*\)",
+        "The duplicate key value is ([REDACTED])",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    (r"Truncated value: '.*'", "Truncated value: '[REDACTED]'", re.IGNORECASE | re.DOTALL),
+    (
+        r"(Conversion failed when converting the [\w ]+? value )'.*'( to data type)",
+        r"\1'[REDACTED]'\2",
+        re.IGNORECASE | re.DOTALL,
     ),
     (
-        r"(The conversion of the [\w ]+? value )'(?:[^']|'')*'",
-        r"\1'[REDACTED]'",
+        r"(The conversion of the [\w ]+? value )'.*'( overflowed)",
+        r"\1'[REDACTED]'\2",
+        re.IGNORECASE | re.DOTALL,
     ),
     # Database names in errors (optional - may want to keep these)
     # (r"database '([^']+)'", "database '[REDACTED]'"),
@@ -57,8 +68,8 @@ def sanitize_error(error: Exception | str, context: str = "") -> str:
     error_str = str(error)
 
     # Apply sensitive pattern replacements
-    for pattern, replacement in SENSITIVE_PATTERNS:
-        error_str = re.sub(pattern, replacement, error_str, flags=re.IGNORECASE)
+    for pattern, replacement, flags in SENSITIVE_PATTERNS:
+        error_str = re.sub(pattern, replacement, error_str, flags=flags)
 
     return error_str
 

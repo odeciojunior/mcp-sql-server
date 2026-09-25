@@ -53,6 +53,29 @@ class TestValueRedaction:
         resp = create_error_response("Truncated value: 'secret'.")
         assert "secret" not in resp["error"]
 
+    def test_duplicate_key_value_with_embedded_crlf(self):
+        """S4: DOTALL is needed per-pattern so an embedded \\r\\n doesn't stop the match."""
+        msg = "The duplicate key value is (Nome='O\r\nBrien', Id=1)."
+        out = sanitize_error(msg)
+        assert "Brien" not in out
+        assert "The duplicate key value is ([REDACTED])" in out
+
+    def test_conversion_failed_apostrophe_and_digits_not_leaked(self):
+        msg = (
+            "Conversion failed when converting the varchar value "
+            "'O''Brien 123.456.789-00' to data type int."
+        )
+        out = sanitize_error(msg)
+        assert "Brien" not in out
+        assert "123" not in out
+
+    def test_truncated_value_with_embedded_quote_leaks_nothing(self):
+        msg = "Truncated value: 'Maria ''Mary'' Silva'."
+        out = sanitize_error(msg)
+        assert "Maria" not in out
+        assert "Mary" not in out
+        assert "Silva" not in out
+
 
 @pytest.mark.parametrize(
     "name", ["MCPError", "ValidationError", "ConnectionError", "QueryError", "TimeoutError"]
