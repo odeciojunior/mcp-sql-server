@@ -159,6 +159,40 @@ class TestDatabaseManagerConcurrentCursors:
             manager.close()
 
 
+class TestDatabaseManagerPoolCreationRace:
+    """P1: DatabaseManager._get_pool() must not construct more than one pool
+    when several threads race on the first call."""
+
+    def test_concurrent_get_pool_creates_one_pool(self, db_config, pool_config):
+        import time
+
+        manager = DatabaseManager(db_config, pool_config)
+        created: list[MagicMock] = []
+        created_lock = threading.Lock()
+
+        def make_pool(*args, **kwargs):
+            time.sleep(0.1)
+            pool = MagicMock()
+            with created_lock:
+                created.append(pool)
+            return pool
+
+        results: list[int] = []
+        results_lock = threading.Lock()
+
+        def worker() -> None:
+            pool = manager._get_pool()
+            with results_lock:
+                results.append(id(pool))
+
+        with patch("mcp_sql_server.database.ConnectionPool", side_effect=make_pool):
+            errors = _run_concurrently(worker, workers=8)
+
+        assert errors == []
+        assert len(created) == 1, f"ConnectionPool constructed {len(created)} times"
+        assert len(set(results)) == 1, "threads got different pool objects"
+
+
 class TestRegistryConcurrentGet:
     """Lazy manager creation in DatabaseRegistry must be atomic."""
 

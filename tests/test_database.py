@@ -312,6 +312,37 @@ class TestExecuteStatementRollback:
         with pytest.raises(pyodbc.Error, match="Execute failed"):
             db.execute_statement("UPDATE test SET x=1")
 
+    def test_execute_statement_cursor_closed_before_rollback_non_pooled(
+        self, mock_pyodbc, mock_cursor, mock_connection, sample_config
+    ):
+        """C4: on error, the cursor is closed before rollback, mirroring get_cursor()."""
+        mock_cursor.execute.side_effect = pyodbc.Error("Execute failed")
+        order = MagicMock()
+        order.attach_mock(mock_cursor.close, "close")
+        order.attach_mock(mock_connection.rollback, "rollback")
+        db = DatabaseManager(sample_config, use_pool=False)
+        with pytest.raises(pyodbc.Error):
+            db.execute_statement("UPDATE test SET x=1")
+        names = [c[0] for c in order.mock_calls]
+        assert names.index("close") < names.index("rollback")
+        assert names.count("close") == 1
+
+    def test_execute_statement_cursor_closed_before_rollback_pooled(
+        self, mock_pyodbc, mock_cursor, mock_connection, sample_config
+    ):
+        """C4: pooled path closes the cursor before rollback too."""
+        mock_cursor.execute.side_effect = pyodbc.Error("Execute failed")
+        order = MagicMock()
+        order.attach_mock(mock_cursor.close, "close")
+        order.attach_mock(mock_connection.rollback, "rollback")
+        db = DatabaseManager(sample_config, use_pool=True)
+        with pytest.raises(pyodbc.Error):
+            db.execute_statement("UPDATE test SET x=1")
+        names = [c[0] for c in order.mock_calls]
+        assert names.index("close") < names.index("rollback")
+        assert names.count("close") == 1
+        db.close()
+
 
 class TestGetCursorRollback:
     """Tests for rollback behavior in get_cursor()."""

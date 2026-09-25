@@ -1,6 +1,7 @@
 """Database connection management."""
 
 import logging
+import threading
 from contextlib import contextmanager
 from typing import Any, Generator
 
@@ -42,15 +43,23 @@ class DatabaseManager:
         self._use_pool = use_pool
         self._pool: ConnectionPool | None = None
         self._connection: pyodbc.Connection | None = None
+        self._pool_lock = threading.Lock()
 
     def _get_pool(self) -> ConnectionPool:
-        """Lazy initialization of connection pool."""
+        """Lazy initialization of connection pool.
+
+        Double-checked locking: concurrent first calls must not each
+        construct a ConnectionPool (which logs in at init), leaking every
+        pool but the last one assigned to self._pool.
+        """
         if self._pool is None:
-            pool_config = self._pool_config or PoolConfig()
-            self._pool = ConnectionPool(self.config, pool_config)
-            logger.info(
-                f"Connection pool initialized (min={pool_config.min_size}, max={pool_config.max_size})"
-            )
+            with self._pool_lock:
+                if self._pool is None:
+                    pool_config = self._pool_config or PoolConfig()
+                    self._pool = ConnectionPool(self.config, pool_config)
+                    logger.info(
+                        f"Connection pool initialized (min={pool_config.min_size}, max={pool_config.max_size})"
+                    )
         return self._pool
 
     def connect(self) -> pyodbc.Connection:
@@ -237,6 +246,7 @@ class DatabaseManager:
             pool = self._get_pool()
             with pool.connection() as pooled_conn:
                 cursor = pooled_conn.connection.cursor()
+                closed = False
                 try:
                     if params:
                         cursor.execute(sql, params)
@@ -246,6 +256,11 @@ class DatabaseManager:
                     pooled_conn.connection.commit()
                     return affected
                 except Exception as e:
+                    # Close the cursor before rollback: a pending result set
+                    # would make rollback fail with "Connection is busy with
+                    # results for another command", mirroring get_cursor().
+                    self._close_cursor(cursor)
+                    closed = True
                     try:
                         pooled_conn.connection.rollback()
                     except Exception:
@@ -254,10 +269,12 @@ class DatabaseManager:
                         logger.error(f"Database error: {sanitize_error(e)}")
                     raise
                 finally:
-                    cursor.close()
+                    if not closed:
+                        cursor.close()
         else:
             conn = self.connect()
             cursor = conn.cursor()
+            closed = False
             try:
                 if params:
                     cursor.execute(sql, params)
@@ -267,6 +284,8 @@ class DatabaseManager:
                 conn.commit()
                 return affected_rows
             except Exception as e:
+                self._close_cursor(cursor)
+                closed = True
                 try:
                     conn.rollback()
                 except Exception:
@@ -275,13 +294,15 @@ class DatabaseManager:
                     logger.error(f"Database error: {sanitize_error(e)}")
                 raise
             finally:
-                cursor.close()
+                if not closed:
+                    cursor.close()
 
     def close(self) -> None:
         """Close database connection(s) and pool."""
-        if self._pool:
-            self._pool.close()
-            self._pool = None
+        with self._pool_lock:
+            if self._pool:
+                self._pool.close()
+                self._pool = None
         if self._connection:
             self._connection.close()
             self._connection = None
