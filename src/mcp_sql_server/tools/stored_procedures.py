@@ -97,6 +97,10 @@ def execute_procedure(
 
     Returns:
         Dictionary with result sets
+
+    Note:
+        Runs read-only: any data changes made by the procedure are rolled
+        back when the connection is returned to the pool.
     """
     # Validate procedure name isn't a system procedure
     valid, error = validate_procedure_name(proc_name)

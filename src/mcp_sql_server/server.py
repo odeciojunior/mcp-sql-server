@@ -278,6 +278,10 @@ def _execute_procedure(
 
     Returns:
         Dictionary with result sets
+
+    Note:
+        Runs read-only: any data changes made by the procedure are rolled
+        back when the connection is returned to the pool.
     """
     return execute_procedure(proc_name, schema, params, database=database)
 

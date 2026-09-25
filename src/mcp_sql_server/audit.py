@@ -50,7 +50,9 @@ def _hash_sql(sql: str) -> str:
         First 16 characters of the SHA-256 hex digest
     """
     masked = _mask_sql(sql)
-    source = masked if masked is not None else sql
+    # Hash a constant placeholder, never the raw SQL, when masking fails:
+    # hashing raw literals would let them be brute-forced from the audit log.
+    source = masked if masked is not None else "<unparseable>"
     return hashlib.sha256(source.encode()).hexdigest()[:16]
 
 

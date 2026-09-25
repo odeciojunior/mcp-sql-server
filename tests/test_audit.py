@@ -58,5 +58,7 @@ class TestHash:
     def test_length(self):
         assert len(_hash_sql("SELECT 1")) == 16
 
-    def test_unparseable_falls_back_to_raw(self):
-        assert _hash_sql("SELECT 'a") != _hash_sql("SELECT 'b")
+    def test_unparseable_hash_is_constant(self):
+        """C2: unparseable SQL hashes a constant placeholder, not the raw
+        literal, so literal values can't be brute-forced from the audit log."""
+        assert _hash_sql("SELECT 'a") == _hash_sql("SELECT 'b")
