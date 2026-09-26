@@ -448,6 +448,11 @@ list_databases()
 
 ## Available Tools
 
+> **Breaking change:** tool names no longer have a leading underscore
+> (`_execute_query` → `execute_query`, `_list_tables` → `list_tables`, etc.).
+> Update MCP clients and any saved permission rules to match — e.g.
+> `mcp__<server>__execute_query` instead of `mcp__<server>___execute_query`.
+
 ### `execute_query`
 
 Execute a read-only SELECT query against the database.

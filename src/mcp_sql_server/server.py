@@ -95,7 +95,7 @@ def get_db(database: str = "default") -> DatabaseManager:
 
 
 # Register tools
-@mcp.tool()
+@mcp.tool(name="execute_query")
 @with_request_id
 def _execute_query(
     sql: str,
@@ -118,7 +118,7 @@ def _execute_query(
     return execute_query(sql, params, limit, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="execute_statement")
 @with_request_id
 def _execute_statement(
     sql: str,
@@ -139,7 +139,7 @@ def _execute_statement(
     return execute_statement(sql, params, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="execute_query_file")
 @with_request_id
 def _execute_query_file(
     filename: str,
@@ -158,7 +158,7 @@ def _execute_query_file(
     return execute_query_file(filename, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="list_tables")
 @with_request_id
 def _list_tables(
     schema: str | None = None,
@@ -177,7 +177,7 @@ def _list_tables(
     return list_tables(schema, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="describe_table")
 @with_request_id
 def _describe_table(
     table_name: str,
@@ -198,7 +198,7 @@ def _describe_table(
     return describe_table(table_name, schema, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="get_view_definition")
 @with_request_id
 def _get_view_definition(
     view_name: str,
@@ -219,7 +219,7 @@ def _get_view_definition(
     return get_view_definition(view_name, schema, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="get_function_definition")
 @with_request_id
 def _get_function_definition(
     function_name: str,
@@ -240,7 +240,7 @@ def _get_function_definition(
     return get_function_definition(function_name, schema, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="list_procedures")
 @with_request_id
 def _list_procedures(
     schema: str | None = None,
@@ -259,7 +259,7 @@ def _list_procedures(
     return list_procedures(schema, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="execute_procedure")
 @with_request_id
 def _execute_procedure(
     proc_name: str,
@@ -286,7 +286,7 @@ def _execute_procedure(
     return execute_procedure(proc_name, schema, params, database=database)
 
 
-@mcp.tool()
+@mcp.tool(name="list_databases")
 @with_request_id
 def _list_databases() -> dict[str, Any]:
     """
@@ -360,4 +360,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Run the package module, not this __main__ copy: tools import
+    # mcp_sql_server.server, and a second copy would have its own registry.
+    from mcp_sql_server.server import main as _package_main
+
+    _package_main()

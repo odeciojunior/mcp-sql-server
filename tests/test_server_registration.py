@@ -16,16 +16,16 @@ import pytest
 from mcp_sql_server import server
 
 EXPECTED_TOOLS = {
-    "_describe_table",
-    "_execute_procedure",
-    "_execute_query",
-    "_execute_query_file",
-    "_execute_statement",
-    "_get_function_definition",
-    "_get_view_definition",
-    "_list_databases",
-    "_list_procedures",
-    "_list_tables",
+    "describe_table",
+    "execute_procedure",
+    "execute_query",
+    "execute_query_file",
+    "execute_statement",
+    "get_function_definition",
+    "get_view_definition",
+    "list_databases",
+    "list_procedures",
+    "list_tables",
 }
 
 EXPECTED_RESOURCES = {
@@ -38,7 +38,7 @@ EXPECTED_RESOURCES = {
 
 # Every tool that reaches a database takes a `database` argument. Only
 # _list_databases inspects the registry itself and so takes none.
-TOOLS_WITHOUT_DATABASE_ARG = {"_list_databases"}
+TOOLS_WITHOUT_DATABASE_ARG = {"list_databases"}
 
 
 @pytest.fixture(scope="module")
@@ -105,12 +105,18 @@ class TestToolRegistration:
         assert properties["database"].get("default") == "default"
 
     def test_list_databases_takes_no_database_argument(self, registered_tools):
-        tool = next(t for t in registered_tools if t.name == "_list_databases")
+        tool = next(t for t in registered_tools if t.name == "list_databases")
         assert "database" not in tool.input_schema.get("properties", {})
+
+    def test_no_registered_tool_name_starts_with_underscore(self, registered_tools):
+        """Tool names are the public MCP surface; the leading underscore was
+        an internal wrapper-naming artifact, not part of the contract."""
+        prefixed = [t.name for t in registered_tools if t.name.startswith("_")]
+        assert prefixed == []
 
     def test_execute_query_schema(self, registered_tools):
         """Spot-check a representative tool's full parameter set."""
-        tool = next(t for t in registered_tools if t.name == "_execute_query")
+        tool = next(t for t in registered_tools if t.name == "execute_query")
         properties = tool.input_schema.get("properties", {})
         assert {"sql", "params", "limit", "database"} <= set(properties)
         assert "sql" in tool.input_schema.get("required", [])

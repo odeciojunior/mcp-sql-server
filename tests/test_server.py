@@ -1460,6 +1460,7 @@ class TestMainStartup:
 
     def test_every_tool_is_wrapped(self):
         import inspect as _inspect
+        import re as _re
 
         source = _inspect.getsource(server)
-        assert source.count("@mcp.tool()\n@with_request_id") == 10
+        assert len(_re.findall(r'@mcp\.tool\(name="[a-z_]+"\)\n@with_request_id', source)) == 10
