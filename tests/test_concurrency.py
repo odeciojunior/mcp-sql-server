@@ -235,6 +235,49 @@ class TestRegistryConcurrentGet:
         registry.close()
 
 
+class TestMetadataCacheCreationRace:
+    """The module-level metadata cache singleton must not be constructed more
+    than once when several threads race on the first call to
+    get_metadata_cache() (reachable concurrently: mcp 2.x runs sync tool
+    handlers in worker threads via anyio.to_thread.run_sync, and the
+    @cached decorator used by list_tables/describe_table/list_procedures
+    calls get_metadata_cache() on every invocation)."""
+
+    def test_concurrent_get_metadata_cache_creates_one_instance(self):
+        import time
+
+        from mcp_sql_server import cache as cache_module
+
+        original_init = cache_module.TTLCache.__init__
+        created: list[cache_module.TTLCache] = []
+        created_lock = threading.Lock()
+
+        def slow_init(self, *args, **kwargs):
+            time.sleep(0.05)
+            original_init(self, *args, **kwargs)
+            with created_lock:
+                created.append(self)
+
+        results: list[int] = []
+        results_lock = threading.Lock()
+
+        def worker() -> None:
+            instance = cache_module.get_metadata_cache()
+            with results_lock:
+                results.append(id(instance))
+
+        cache_module._metadata_cache = None
+        try:
+            with patch.object(cache_module.TTLCache, "__init__", slow_init):
+                errors = _run_concurrently(worker, workers=8)
+
+            assert errors == []
+            assert len(created) == 1, f"TTLCache constructed {len(created)} times"
+            assert len(set(results)) == 1, "threads got different cache instances"
+        finally:
+            cache_module._metadata_cache = None
+
+
 class TestRequestIdIsolation:
     def test_concurrent_calls_get_distinct_ids(self):
         from mcp_sql_server.logging_config import request_id_var, with_request_id

@@ -80,8 +80,6 @@ Named databases (`DB_{ALIAS}_*`) do not consult `SQL_SERVER_*` at all.
 | `SQL_SERVER_ENCRYPT` | `DB_ENCRYPT` | — | `false` |
 | `SQL_SERVER_TRUST_CERT` | `DB_TRUST_CERT` | — | `false` |
 
-`SQL_SERVER_*` vars take priority over `DB_*` vars when both are present.
-
 ---
 
 ## ODBC Driver Check

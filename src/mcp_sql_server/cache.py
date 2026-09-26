@@ -132,17 +132,20 @@ class TTLCache:
 
 # Global cache instance for metadata queries
 _metadata_cache: TTLCache | None = None
+_metadata_cache_lock = threading.Lock()
 
 
 def get_metadata_cache() -> TTLCache:
-    """Get the global metadata cache instance.
+    """Get the global metadata cache instance (thread-safe).
 
     Returns:
         The global TTLCache instance for metadata.
     """
     global _metadata_cache
     if _metadata_cache is None:
-        _metadata_cache = TTLCache(default_ttl=60)
+        with _metadata_cache_lock:
+            if _metadata_cache is None:
+                _metadata_cache = TTLCache(default_ttl=60)
     return _metadata_cache
 
 
