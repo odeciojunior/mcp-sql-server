@@ -138,12 +138,19 @@ def tokenize(sql: str) -> list[Token]:
         if sql.startswith("--", i):
             while i < n and sql[i] not in "\r\n":
                 i += 1
-            if i < n and sql[i] == "\r" and not (i + 1 < n and sql[i + 1] == "\n"):
-                # A bare \r (not part of a \r\n pair) is ambiguous: rather than
-                # guess whether the comment ends there, refuse (fail closed) so
-                # text after it can't be silently uncommented by a mismatch
-                # with SQL Server's own line-ending handling.
-                raise LexError("bare carriage return after line comment")
+            if i < n and sql[i] == "\r":
+                if i + 1 >= n:
+                    # A bare \r as the very last character of the input has
+                    # nothing after it that could be silently uncommented, so
+                    # it unambiguously ends the comment.
+                    i += 1
+                elif sql[i + 1] != "\n":
+                    # A bare \r (not part of a \r\n pair) followed by more
+                    # input is ambiguous: rather than guess whether the
+                    # comment ends there, refuse (fail closed) so text after
+                    # it can't be silently uncommented by a mismatch with SQL
+                    # Server's own line-ending handling.
+                    raise LexError("bare carriage return after line comment")
             continue
         if sql.startswith("/*", i):
             i = _scan_block_comment(sql, i)

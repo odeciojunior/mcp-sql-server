@@ -664,6 +664,10 @@ All queries and statements are tokenized before execution. Keywords inside strin
 
 Unbracketed column names that match a blocked word (for example `Send`, `Receive`, `Open`) must be written in brackets: `[Send]`.
 
+Query hints are allowed: join/union hints such as `INNER MERGE JOIN` and `OPTION (MERGE JOIN)`, and `OPTION (USE HINT(...))` / `OPTION (USE PLAN ...)`.
+
+`FETCH` and statement labels after DML are accepted; they are harmless because tools never open cursors.
+
 **Use a read-only login.** The validator is defense in depth. For read-only use, connect with a login that only has `db_datareader`.
 
 ### Identifier Validation
