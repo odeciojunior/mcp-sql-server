@@ -107,6 +107,52 @@ def _structural_word(tok: Token) -> str:
     return tok.upper if tok.text.isascii() else ""
 
 
+def _is_merge_join_hint(tokens: list[Token], idx: int) -> bool:
+    """True if tokens[idx] is a WORD "MERGE" used as a join/set-operator hint
+    (e.g. INNER MERGE JOIN, OPTION (MERGE JOIN), OPTION (MERGE UNION)) rather
+    than the start of a MERGE statement.
+
+    A real MERGE statement is always followed by INTO or a target name, never
+    by JOIN/UNION, so this cannot admit a MERGE statement.
+    """
+    nxt = idx + 1
+    return (
+        nxt < len(tokens)
+        and tokens[nxt].kind is TokenKind.WORD
+        and _structural_word(tokens[nxt]) in ("JOIN", "UNION")
+    )
+
+
+def _is_use_hint(tokens: list[Token], idx: int) -> bool:
+    """True if tokens[idx] is a WORD "USE" used as a query hint inside an
+    OPTION (...) clause (e.g. OPTION (USE HINT('...')), OPTION (USE PLAN ...))
+    rather than the USE <database> statement.
+
+    Requires the next token to be HINT or PLAN, and USE to sit inside a
+    parenthesized group (depth >= 1) whose opening '(' at depth 0 is
+    immediately preceded by the word OPTION.
+    """
+    tok = tokens[idx]
+    if tok.depth < 1:
+        return False
+    nxt = idx + 1
+    if not (
+        nxt < len(tokens)
+        and tokens[nxt].kind is TokenKind.WORD
+        and _structural_word(tokens[nxt]) in ("HINT", "PLAN")
+    ):
+        return False
+    for j in range(idx - 1, -1, -1):
+        t = tokens[j]
+        if t.kind is TokenKind.OTHER and t.text == "(" and t.depth == 0:
+            return (
+                j > 0
+                and tokens[j - 1].kind is TokenKind.WORD
+                and _structural_word(tokens[j - 1]) == "OPTION"
+            )
+    return False
+
+
 def _follows_set_operator(tokens: list[Token], idx: int) -> bool:
     """True if tokens[idx] is preceded by UNION/EXCEPT/INTERSECT (optionally + ALL)."""
     j = idx - 1
@@ -126,6 +172,8 @@ def _check_read_query(tokens: list[Token]) -> tuple[bool, str]:
             continue
         word = tok.upper
         if word in READ_ONLY_FORBIDDEN:
+            if word == "MERGE" and _is_merge_join_hint(tokens, idx):
+                continue
             return False, f"Data modification not allowed in read-only query: {word}"
         if _structural_word(tok) == "SELECT" and tok.depth == 0:
             if select_seen and not _follows_set_operator(tokens, idx):
@@ -165,6 +213,8 @@ def _check_modify_statement(tokens: list[Token]) -> tuple[bool, str]:
         word = tok.upper
         struct_word = _structural_word(tok)
         if word in _DML_WORDS:
+            if word == "MERGE" and _is_merge_join_hint(tokens, idx):
+                continue
             # A DML word anywhere but token 0 (any depth) means a second,
             # composable/nested statement (e.g. INSERT ... SELECT ... FROM
             # (DELETE ... OUTPUT ...) AS d).
@@ -258,8 +308,12 @@ def validate_query(sql: str, allow_modifications: bool = False) -> tuple[bool, s
         if tok.upper in BLOCKED_KEYWORDS:
             return False, f"Blocked keyword detected: {tok.upper}"
 
-    for tok in words:
+    for idx, tok in enumerate(tokens):
+        if tok.kind is not TokenKind.WORD:
+            continue
         if tok.upper in STATEMENT_WORDS:
+            if tok.upper == "USE" and _is_use_hint(tokens, idx):
+                continue
             return False, f"Statement not allowed: {tok.upper}"
 
     for a, b in zip(tokens, tokens[1:]):

@@ -232,6 +232,12 @@ READ_ACCEPTED = [
     "SELECT * FROM t WHERE name = 'xp_cmdshell'",
     "SELECT [sp_who] FROM t",
     "SELECT * FROM t WHERE a IN (SELECT a FROM u)",
+    "SELECT a.x FROM a INNER MERGE JOIN b ON a.id = b.id",
+    "SELECT a.x FROM a LEFT OUTER MERGE JOIN b ON a.id = b.id",
+    "SELECT * FROM t OPTION (USE HINT('FORCE_LEGACY_CARDINALITY_ESTIMATION'))",
+    "SELECT * FROM t OPTION (MERGE JOIN, RECOMPILE)",
+    "SELECT a FROM t UNION SELECT b FROM u OPTION (MERGE UNION)",
+    "SELECT * FROM t OPTION (RECOMPILE, USE HINT('DISABLE_OPTIMIZER_ROWGOAL'))",
 ]
 
 READ_REJECTED = [
@@ -280,6 +286,13 @@ READ_REJECTED = [
     ("SELECT .5eUSE master", "USE"),
     ("SELECT (1", "Unbalanced"),
     ("SELECT 1)", "Unbalanced"),
+    ("SELECT 1 USE HINT", "USE"),
+    ("SELECT 1 OPTION (RECOMPILE) USE master", "USE"),
+    ("SELECT * FROM t WHERE x IN (USE HINT)", "USE"),
+    ("SELECT 1 MERGE INTO t USING u ON 1=1 WHEN MATCHED THEN DELETE;", "MERGE"),
+    ("SELECT * FROM t MERGE t2 USING u ON 1=1", "MERGE"),
+    ("SELECT 1 OPTION (USE master)", "USE"),
+    ("SELECT * FROM t OPTION (USE PLAN N'<x/>') USE master", "USE"),
 ]
 
 STATEMENT_ACCEPTED = [
@@ -292,6 +305,9 @@ STATEMENT_ACCEPTED = [
     "update t set a = 1 where id = ?",
     "UPDATE t WITH (ROWLOCK) SET a = 1 WHERE b = 2",
     "UPDATE TOP (5) t SET a = 1",
+    "UPDATE a SET x = 1 FROM t a INNER MERGE JOIN u b ON a.id = b.id",
+    "DELETE a FROM t a INNER MERGE JOIN u b ON a.id = b.id "
+    "OPTION (USE HINT('ENABLE_PARALLEL_PLAN_PREFERENCE'))",
 ]
 
 STATEMENT_REJECTED = [
@@ -340,6 +356,12 @@ STATEMENT_REJECTED = [
         "DELETE FROM a WHERE 1=0 --\r(\n DELETE FROM b",
         "Invalid SQL",
     ),
+    (
+        "INSERT INTO t SELECT * FROM (MERGE u USING v ON 1=1 WHEN MATCHED THEN "
+        "DELETE OUTPUT deleted.*) d",
+        "Multiple statements",
+    ),
+    ("UPDATE t SET a = 1 USE master", "USE"),
 ]
 
 

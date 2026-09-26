@@ -147,6 +147,7 @@ Validation tokenizes SQL (`sql_lexer.py`); strings, quoted identifiers, and comm
 - `execute_query`: first word `SELECT`/`WITH`; `INSERT`/`UPDATE`/`DELETE`/`MERGE`/`INTO`/`SET` rejected anywhere; extra top-level `SELECT` only after `UNION`/`EXCEPT`/`INTERSECT`.
 - `execute_statement`: first word `INSERT`/`UPDATE`/`DELETE`; one `SET` in `UPDATE`; top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` / `OUTPUT ... INTO`.
 - CTE-prefixed DML is unsupported.
+- Query hints are allowed: join/union hints such as `INNER MERGE JOIN` and `OPTION (MERGE JOIN)`, and `OPTION (USE HINT(...))` / `OPTION (USE PLAN ...)`.
 
 ## Testing
 

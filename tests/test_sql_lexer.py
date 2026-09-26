@@ -153,6 +153,13 @@ class TestCommentsAndWhitespace:
             (W, "SELECT"), (N, "1"), (W, "FROM"), (W, "t"),
         ]
 
+    def test_bare_carriage_return_at_end_of_input_ends_comment(self):
+        assert kinds("SELECT 1 -- x\r") == [(W, "SELECT"), (N, "1")]
+
+    def test_bare_carriage_return_followed_by_text_still_raises(self):
+        with pytest.raises(LexError, match="bare carriage return"):
+            tokenize("SELECT 1 --x\rDELETE")
+
     def test_block_comment_skipped(self):
         assert kinds("SELECT /* DROP */ 1") == [(W, "SELECT"), (N, "1")]
 
