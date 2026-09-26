@@ -76,6 +76,8 @@ Cross-Cutting Concerns:
   audit.py ............ Query hashing, execution timing, audit events
   errors.py ........... Error sanitization and error responses
   logging_config.py ... Structured JSON/text logging, request correlation
+  sql_lexer.py ........ Dependency-free T-SQL tokenizer used by security/audit
+  utils.py ............ Lazy accessors (breaks tools/resources <-> server import cycle)
 ```
 
 ### Module Responsibilities
@@ -123,6 +125,7 @@ The server uses **stdio transport** and works with any MCP-compatible client. Be
 > 1. Clone and install the project (see [Setup](#setup) above)
 > 2. Copy `.env.example` to `.env` and configure your database credentials
 > 3. Note the **absolute path** to the project's Python interpreter: `/path/to/mcp-sql-server/.venv/bin/python`
+> 4. On WSL2 with SQL Server running on Windows, use `127.0.0.1` rather than `localhost` for the host: under mirrored networking `localhost` logins can hang until the login timeout.
 
 ### Claude Code (CLI)
 
@@ -387,6 +390,8 @@ LOG_FORMAT=text
 ### Startup Validation
 
 On startup the server checks every database's configuration and logs problems at `ERROR` (alias, field, and error type only; never values). The server still starts: a misconfigured database returns its configuration error when a tool targets it, and the other databases keep working.
+
+> **Security tip:** connect with a login that has only the `db_datareader` role unless you need `execute_statement`. The server's SQL validation is defense in depth, not a substitute for database permissions.
 
 ## Multi-Database Support
 
@@ -656,12 +661,12 @@ All queries and statements are tokenized before execution. Keywords inside strin
 | External Access | `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `BULK` |
 | Dynamic SQL / control flow | `EXEC`, `EXECUTE`, `DECLARE`, `USE`, `WAITFOR`, `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVE`, `IF`, `WHILE`, `GOTO`, `RETURN`, `PRINT`, `RAISERROR`, `THROW`, `OPEN`, `CLOSE`, `DEALLOCATE`, `SETUSER`, `REVERT`, `RECEIVE`, `SEND`, `ADD` |
 | Legacy text/image | `WRITETEXT`, `UPDATETEXT`, `READTEXT` |
-| Side effects | `NEXT VALUE FOR`, `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION` |
+| Side effects | `NEXT VALUE` (as in `NEXT VALUE FOR`), `ENABLE/DISABLE TRIGGER`, `GET/MOVE/END CONVERSATION` |
 | File readers | `fn_xe_file_target_read_file`, `fn_trace_gettable`, `fn_get_audit_file`, `fn_get_audit_file_v2`, `fn_dump_dblog`, `fn_dump_dblog_xtp`, `fn_xe_telemetry_blob_target_read_file`, `dm_os_file_exists`, `dm_os_enumerate_filesystem` |
 
 **Blocked Prefixes:** `xp_*`, `sp_*` (system stored procedures)
 
-**One statement per call.** T-SQL does not need `;` between statements, so the validator allows only one statement at the top level (outside parentheses). A single trailing `;` is fine.
+**One statement per call.** T-SQL does not need `;` between statements, so the validator allows only one statement at the top level (outside parentheses). A single trailing `;` is fine. Unbalanced parentheses are rejected.
 
 - `execute_query` accepts only `SELECT` or `WITH` first, rejects `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `INTO`, and `SET` anywhere, and allows a second top-level `SELECT` only after `UNION`, `EXCEPT`, or `INTERSECT`.
 - `execute_statement` accepts only `INSERT`, `UPDATE`, or `DELETE` first. `SET` is allowed once in an `UPDATE`, and must come before any top-level `FROM`, `WHERE`, `OUTPUT`, or `OPTION`; a top-level `SELECT` only in `INSERT ... SELECT`; `INTO` only in `INSERT INTO` or `OUTPUT ... INTO`. `UPDATE STATISTICS` is rejected outright. Nested (composable) DML is not allowed.
@@ -689,7 +694,7 @@ Error messages are automatically scrubbed to remove:
 - IP addresses
 - Usernames and passwords
 - Connection string details (SERVER, UID, PWD)
-- Data values SQL Server echoes in errors: duplicate key values (2627/2601), truncated values (2628), and values in conversion failures (245)
+- Data values SQL Server echoes in errors: duplicate key values (2627/2601), truncated values (2628), values in conversion failures (245), and values in conversion overflows (248)
 
 Object names (e.g. `Invalid object name 'dbo.Req'`) are kept for debugging.
 
@@ -704,6 +709,8 @@ The `ConnectionPool` class provides thread-safe connection management using Pyth
 3. **Health Check:** Executes `SELECT 1` before returning connections that exceed the `health_check_interval`
 4. **Release:** Rolls back any pending transaction, checks staleness, and returns to pool
 5. **Retirement:** Connections are closed when they exceed `max_lifetime`, `idle_timeout`, or fail health checks
+6. **Invalid connections:** A connection whose session state could not be reset after a query (e.g. `SET ROWCOUNT` or database changed) is closed on release instead of being reused
+7. **Login failures:** If a new connection can't be created and the pool holds none, `acquire()` raises the login error immediately; if others are checked out it waits for one to be released, without retrying the login
 
 ### Pool Statistics
 
@@ -720,6 +727,9 @@ Available via the `sqlserver://pool/stats` resource:
 | `failed_acquisitions` | Timeouts or creation failures |
 | `health_checks` | Total health checks performed |
 | `transaction_resets` | Rollbacks performed on release |
+| `pool_size` / `max_size` | Configured maximum pool size |
+| `min_size` | Minimum connections pre-created |
+| `closed` | Whether the pool has been shut down |
 
 ## Caching
 
@@ -732,7 +742,7 @@ Schema metadata queries (`list_tables`, `describe_table`, `list_procedures`) are
 - `@cached` decorator for transparent function-level caching; keys bind arguments to the function signature, so positional and keyword calls share an entry
 - Global `invalidate_metadata_cache()` to clear all cached entries
 - `cleanup_expired()` for bulk removal of stale entries
-- `stats()` method returning total, valid, and expired entry counts
+- `stats()` method returning total, valid, and expired entry counts and the default TTL
 
 ## Observability
 
@@ -745,7 +755,7 @@ The `AuditLogger` tracks all database operations:
 - **Procedures:** Procedure name, schema, duration, row count, target database
 - **Validation Failures:** SQL hash, short masked preview, error, target database
 
-Previews replace every string and numeric literal with `?` and drop comments (`WHERE cpf = '123'` → `WHERE cpf = ?`). `sql_hash` is the first 16 hex chars of the SHA-256 of the masked SQL: a query-shape fingerprint, so queries that differ only in literal values share a hash and the values cannot be recovered from it.
+Previews replace every string and numeric literal (and `"double-quoted"` tokens, which are strings under `QUOTED_IDENTIFIER OFF`) with `?` and drop comments (`WHERE cpf = '123'` → `WHERE cpf = ?`). SQL that cannot be tokenized is logged as `<unparseable>` and hashed as a constant, never raw. `sql_hash` is the first 16 hex chars of the SHA-256 of the masked SQL: a query-shape fingerprint, so queries that differ only in literal values share a hash and the values cannot be recovered from it.
 
 ### Structured Logging
 
@@ -807,6 +817,7 @@ The test suite covers all modules with mocked database connections; run it to se
 | `test_logging_config.py` | Text/JSON formats, request ID propagation |
 | `test_utils.py` | Lazy server accessors |
 | `test_query_dir.py` | Query directory resolution and file loading |
+| `test_entrypoint.py` | `python -m mcp_sql_server.server` over stdio: single registry, clean shutdown (no DB connection) |
 | `conftest.py` | Shared pytest fixtures (mock database, config objects) |
 
 ## Type Safety
@@ -819,9 +830,9 @@ The codebase uses strict type annotations validated with mypy in strict mode.
 ```
 
 Mypy configuration (from `pyproject.toml`):
-- `disallow_untyped_defs` and `disallow_incomplete_defs`
+- `disallow_untyped_defs`, `disallow_incomplete_defs`, `disallow_untyped_decorators`, `check_untyped_defs`
 - `disallow_any_generics` (all generics must be parameterized)
-- `warn_return_any`, `warn_unused_configs`, `warn_redundant_casts`
+- `warn_return_any`, `warn_unused_configs`, `warn_redundant_casts`, `warn_unused_ignores`, `warn_no_return`
 - `strict_equality` and `strict_concatenate`
 - `no_implicit_reexport`
 
@@ -872,6 +883,7 @@ pyproject.toml                             # Package metadata, dependencies, myp
     +-- test_logging_config.py             # Logging tests
     +-- test_utils.py                      # Lazy accessor tests
     +-- test_query_dir.py                  # Query directory tests
+    +-- test_entrypoint.py                 # -m entrypoint / registry lifecycle test
 ```
 
 ## Development Commands
@@ -918,4 +930,4 @@ pyproject.toml                             # Package metadata, dependencies, myp
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
