@@ -14,7 +14,7 @@ A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server
 - **Structured Logging** in JSON or text format with request correlation IDs
 - **Error Sanitization** that redacts IPs, credentials, and connection details from error messages
 - **Strict Type Safety** with full mypy strict mode compliance
-- **Comprehensive test suite** at 85%+ code coverage (no live database required)
+- **Comprehensive test suite** at 95%+ code coverage (no live database required)
 
 ## Architecture Overview
 
