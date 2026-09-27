@@ -660,3 +660,21 @@ class TestPoolCleanupBranches:
             pool.release(conn)
             conn.connection.close.assert_called()
             pool.close()
+
+    def test_release_of_invalid_connection_closes_it(self, db_config, pool_config):
+        """A connection whose session reset failed is closed, never reused."""
+        with patch("pyodbc.connect", side_effect=lambda *a, **kw: MagicMock()):
+            pool = ConnectionPool(db_config, pool_config)
+            conn = pool.acquire()
+            conn.invalid = True
+            pool.release(conn)
+            conn.connection.close.assert_called()
+            pool.close()
+
+    def test_acquire_from_closed_pool_raises(self, db_config, pool_config):
+        """Acquiring after close() fails loudly rather than returning a dead handle."""
+        with patch("pyodbc.connect", side_effect=lambda *a, **kw: MagicMock()):
+            pool = ConnectionPool(db_config, pool_config)
+            pool.close()
+            with pytest.raises(RuntimeError, match="Pool is closed"):
+                pool.acquire()
