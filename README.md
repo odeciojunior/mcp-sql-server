@@ -452,9 +452,12 @@ execute_query(sql="SELECT TOP 10 * FROM Users")
 # Query a named database
 execute_query(sql="SELECT TOP 10 * FROM Events", database="analytics")
 
-# List all configured databases
+# List all configured databases, checking each is actually reachable
 list_databases()
-# Returns: {"success": True, "databases": [{"name": "default", ...}, {"name": "analytics", ...}]}
+# Returns: {"success": True, "databases": [{"name": "default", ..., "status": "ok"}, ...]}
+
+# Skip the connection check when you only want the configured names
+list_databases(probe=False)
 ```
 
 ### Alias Rules
@@ -629,7 +632,11 @@ execute_procedure(
 
 ### `list_databases`
 
-List all configured database connections (no parameters).
+List all configured database connections and whether each one is reachable.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `probe` | bool | `true` | Open a real connection per database to check reachability. `false` returns the configured names without connecting. |
 
 **Response:**
 ```json
@@ -637,13 +644,26 @@ List all configured database connections (no parameters).
   "success": true,
   "databases": [
     {"name": "default", "host": "server1", "port": 1433, "database": "MyDB", "status": "ok"},
+    {"name": "reports", "host": "server1", "port": 1433, "database": "Reports",
+     "status": "unreachable", "error": "Cannot open database \"Reports\" requested by the login"},
     {"name": "archive", "status": "misconfigured", "error": "password: string_too_short"}
   ],
-  "count": 2
+  "count": 3
 }
 ```
 
-A database whose configuration is invalid is listed with `"status": "misconfigured"` and a value-free error. Calls that target it return that error; other databases keep working.
+`status` is one of:
+
+| Value | Meaning |
+|-------|---------|
+| `ok` | A connection opened and `SELECT 1` succeeded. |
+| `unreachable` | The probe ran and failed; `error` gives a value-free reason. |
+| `misconfigured` | The configuration is invalid, so no probe was attempted. Calls that target it return that error; other databases keep working. |
+| `unknown` | No probe was requested (`probe=false`, or the `sqlserver://databases` resource). |
+
+`status` never claims reachability that was not measured. A database that is OFFLINE on the server, or that the login cannot open, reports `unreachable` rather than `ok`.
+
+Probes run in parallel with a 5-second timeout each, separate from `DB_TIMEOUT`. The `sqlserver://databases` resource never probes -- resources are read speculatively and must not open connections as a side effect -- so it reports `unknown`.
 
 ## Available Resources
 

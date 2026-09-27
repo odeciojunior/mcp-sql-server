@@ -193,9 +193,10 @@ class TestMisconfiguredAliases:
         registry.close()
 
     def test_database_info_reports_status(self, default_config):
+        """Unprobed, a valid config is "unknown" -- it used to claim "ok"."""
         info = self._from_env_with_bad_alias(default_config).get_database_info()
         by_name = {d["name"]: d for d in info}
-        assert by_name["default"]["status"] == "ok"
+        assert by_name["default"]["status"] == "unknown"
         assert by_name["broken"] == {
             "name": "broken",
             "status": "misconfigured",
@@ -226,4 +227,109 @@ def test_resource_databases_shows_status(default_config):
     with patch.object(database_info, "_get_registry", return_value=registry):
         text = database_info.resource_databases()
     assert "| broken | - | - | - | misconfigured: host: string_too_short |" in text
-    assert "| default | host1 | 1433 | db1 | ok |" in text
+    # "unknown", not "ok": the resource does not probe, so it cannot claim the
+    # database is reachable. It previously printed "ok" unconditionally.
+    assert "| default | host1 | 1433 | db1 | unknown |" in text
+
+
+class TestConnectivityProbe:
+    """`status` must never claim reachability without having measured it.
+
+    Before this, get_database_info() reported status "ok" for every alias whose
+    config merely parsed -- including databases that were OFFLINE on the server.
+    """
+
+    def test_probe_returns_ok_when_select_succeeds(self, registry):
+        with patch("pyodbc.connect", return_value=MagicMock()) as connect:
+            assert registry.probe("default") == ("ok", None)
+        assert connect.called
+
+    def test_probe_runs_select_one(self, registry):
+        """A connection that opens but cannot serve a query is not reachable."""
+        conn = MagicMock()
+        with patch("pyodbc.connect", return_value=conn):
+            registry.probe("default")
+        conn.cursor.return_value.execute.assert_called_once_with("SELECT 1")
+
+    def test_probe_closes_the_connection(self, registry):
+        conn = MagicMock()
+        with patch("pyodbc.connect", return_value=conn):
+            registry.probe("default")
+        conn.close.assert_called_once()
+
+    def test_probe_reports_unreachable_on_failure(self, registry):
+        with patch("pyodbc.connect", side_effect=Exception("Cannot open database")):
+            status, error = registry.probe("default")
+        assert status == "unreachable"
+        assert error and "Cannot open database" in error
+
+    def test_probe_error_does_not_leak_the_password(self, registry):
+        boom = Exception("login failed for PWD=p1 at host1")
+        with patch("pyodbc.connect", side_effect=boom):
+            _, error = registry.probe("default")
+        assert error is not None
+        assert "p1" not in error
+
+    def test_probe_does_not_create_a_pooled_manager(self, registry):
+        """Probing must not leave a DatabaseManager cached for a dead database."""
+        with patch("pyodbc.connect", return_value=MagicMock()):
+            registry.probe("default")
+        assert registry._managers == {}
+
+    def test_probe_unknown_alias_raises(self, registry):
+        with pytest.raises(KeyError):
+            registry.probe("nope")
+
+    def test_info_without_probe_reports_unknown(self, registry):
+        """The old cheap listing stays available -- but it no longer says "ok"."""
+        with patch("pyodbc.connect") as connect:
+            info = registry.get_database_info()
+        connect.assert_not_called()
+        assert {d["status"] for d in info} == {"unknown"}
+
+    def test_info_with_probe_reports_measured_status(self, default_config, second_config):
+        registry = DatabaseRegistry(
+            configs={"default": default_config, "analytics": second_config},
+        )
+
+        def _connect(conn_str, *a, **kw):
+            if "db2" in conn_str:
+                raise Exception("Cannot open database")
+            return MagicMock()
+
+        with patch("pyodbc.connect", side_effect=_connect):
+            info = {d["name"]: d for d in registry.get_database_info(probe=True)}
+
+        assert info["default"]["status"] == "ok"
+        assert info["analytics"]["status"] == "unreachable"
+        assert "Cannot open database" in info["analytics"]["error"]
+
+    def test_misconfigured_alias_is_never_probed(self, default_config):
+        registry = DatabaseRegistry(
+            configs={"default": default_config},
+            config_errors={"broken": "DB_BROKEN_HOST is required"},
+        )
+        with patch("pyodbc.connect", return_value=MagicMock()) as connect:
+            info = {d["name"]: d for d in registry.get_database_info(probe=True)}
+        assert info["broken"]["status"] == "misconfigured"
+        assert connect.call_count == 1  # only "default"
+
+    def test_probes_run_in_parallel(self, default_config):
+        """Serial probing of N dead aliases would take N * timeout."""
+        import time
+
+        configs = {"default": default_config}
+        for i in range(4):
+            configs[f"db{i}"] = default_config
+        registry = DatabaseRegistry(configs=configs)
+
+        def _slow(*a, **kw):
+            time.sleep(0.3)
+            return MagicMock()
+
+        with patch("pyodbc.connect", side_effect=_slow):
+            start = time.monotonic()
+            registry.get_database_info(probe=True)
+            elapsed = time.monotonic() - start
+
+        assert elapsed < 0.9, f"probes appear serialised: {elapsed:.2f}s for 5 aliases"

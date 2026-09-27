@@ -180,7 +180,7 @@ RESOURCE_EXPECTATIONS = [
     ("sqlserver://database/info", "TestDb"),
     ("sqlserver://functions", "Users"),
     ("sqlserver://pool/stats", "Total Connections Created"),
-    ("sqlserver://databases", "| default | testhost | 1433 | TestDb | ok |"),
+    ("sqlserver://databases", "| default | testhost | 1433 | TestDb | unknown |"),
 ]
 
 
