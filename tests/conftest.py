@@ -12,17 +12,19 @@ import pytest
 def _isolate_from_real_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     """Never let tests read the repository's real .env (points at production).
 
-    Points DEFAULT_ENV_PATH (in both config and server, which imports the
-    name directly) at a nonexistent file, and strips SQL_SERVER_* env vars
-    so tests can't pick up real credentials from the process environment.
+    Sets MCP_SQL_SERVER_ENV_FILE to a nonexistent file, which outranks both
+    ./.env and the package-relative fallback in resolve_env_path -- without
+    it, a suite run from the repository root would read the real .env through
+    the working-directory branch. Also repoints the package fallback and
+    strips SQL_SERVER_*/DB_* so tests can't pick up real credentials from the
+    process environment.
     """
     import mcp_sql_server.config as config_module
-    import mcp_sql_server.server as server_module
-    from mcp_sql_server.config import get_query_dir
+    from mcp_sql_server.config import ENV_FILE_VAR, get_query_dir
 
     fake_env_path = tmp_path / "no.env"
-    monkeypatch.setattr(config_module, "DEFAULT_ENV_PATH", fake_env_path)
-    monkeypatch.setattr(server_module, "DEFAULT_ENV_PATH", fake_env_path)
+    monkeypatch.setenv(ENV_FILE_VAR, str(fake_env_path))
+    monkeypatch.setattr(config_module, "_PACKAGE_ENV_PATH", fake_env_path)
 
     for key in list(os.environ.keys()):
         if key.startswith("SQL_SERVER_") or key.startswith("DB_"):

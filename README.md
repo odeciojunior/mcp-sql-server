@@ -131,7 +131,7 @@ The server uses **stdio transport** and works with any MCP-compatible client. Be
 
 Register the server using `claude mcp add`. All flags go before the server name, and `--` separates the command.
 
-**Basic (requires editable install so `.env` is found relative to the package):**
+**Basic (reads `.env` from the server's working directory):**
 
 ```bash
 claude mcp add --transport stdio mcp-sql-server -- \
@@ -198,7 +198,7 @@ Open Claude Desktop → Settings → Developer → Edit Config, then add:
 
 Restart Claude Desktop after saving. A hammer icon should appear in the input area confirming the tools are loaded.
 
-> **Note:** All `env` values must be strings. If the server's working directory differs from the project root, the `.env` file won't be found automatically -- pass all required variables via the `env` block instead.
+> **Note:** All `env` values must be strings. The `.env` file is looked for in the server's working directory; if the client starts the server somewhere else, set `MCP_SQL_SERVER_ENV_FILE` to the file's full path, or pass the variables via the `env` block.
 
 ### Cursor
 
@@ -302,17 +302,23 @@ There are two ways to provide database credentials to the server:
 | Method | Best For | How It Works |
 |--------|----------|--------------|
 | `env` block in JSON config | Claude Desktop, Cursor, Windsurf, VS Code | Client injects variables into the server process at startup |
-| `.env` file in project root | Claude Code CLI, local development | Server loads via `python-dotenv` on startup |
+| `.env` file | Claude Code CLI, local development | Server reads it via `python-dotenv` on startup, without modifying the process environment |
 
 **When using the `env` block:** The MCP client spawns the server as a subprocess and injects the variables directly. This is the most reliable method since it doesn't depend on the working directory.
 
-**When using the `.env` file:** The server resolves `.env` relative to the installed package location (traversing up to the repository root), which works correctly when installed in editable mode (`pip install -e .`). If the package is installed non-editably, the `.env` file won't be found -- use the `env` block instead.
+**When using the `.env` file:** the server looks in this order, taking the first that applies:
+
+1. `$MCP_SQL_SERVER_ENV_FILE`, if set -- the full path to the file
+2. `.env` in the server's working directory
+3. `.env` beside the installed package, which exists only for an editable checkout (`pip install -e .`)
+
+Only the working directory is checked, never its parents: climbing ancestors would let an unrelated directory's `.env` supply database credentials without anyone choosing it. If the client starts the server outside your project, set `MCP_SQL_SERVER_ENV_FILE`.
 
 **Multi-database variables** (e.g., `DB_ANALYTICS_HOST`) work with both methods. See [Multi-Database Support](#multi-database-support) for details.
 
 ## Configuration
 
-Copy `.env.example` to `.env` at the repository root and configure your database connection.
+Copy `.env.example` to `.env` in the directory the server runs from and configure your database connection. To keep it elsewhere, point `MCP_SQL_SERVER_ENV_FILE` at it.
 
 ### Configuration Sources and Precedence
 
@@ -369,6 +375,12 @@ Named databases (`DB_{ALIAS}_*`) do not read `SQL_SERVER_*`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QUERY_DIR` | `<repo-root>/query/` | Directory containing `.sql` files for `execute_query_file` |
+
+### Configuration File
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_SQL_SERVER_ENV_FILE` | unset | Full path to the `.env` file. Overrides the working-directory lookup. |
 
 ### Example `.env`
 
