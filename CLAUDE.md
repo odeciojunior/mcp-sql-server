@@ -183,7 +183,7 @@ Key test files:
 - `test_pool.py` - Connection pool lifecycle, health checks
 - `test_security.py` - SQL validation, blocked keywords
 - `test_database.py` - DatabaseManager operations
-- `test_config.py` - Configuration parsing and validation
+- `test_config.py` - Configuration parsing, validation, and `.env` path resolution
 - `test_registry.py` - Multi-database registry
 - `test_cache.py` - TTL cache behavior
 - `test_audit.py` - Audit logging and query hashing

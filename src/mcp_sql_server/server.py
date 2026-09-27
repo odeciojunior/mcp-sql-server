@@ -10,7 +10,7 @@ from dotenv import dotenv_values
 from mcp.server.mcpserver import MCPServer
 
 from . import __version__
-from .config import DEFAULT_ENV_PATH, describe_config_error
+from .config import describe_config_error, resolve_env_path
 from .database import DatabaseManager
 from .logging_config import setup_logging, with_request_id
 from .registry import DatabaseRegistry
@@ -335,7 +335,7 @@ def _logging_settings() -> tuple[str | None, str | None]:
     Reads .env without modifying os.environ; no loader in this package ever
     merges .env into the process environment.
     """
-    file_values = dotenv_values(DEFAULT_ENV_PATH)  # {} when the file is missing
+    file_values = dotenv_values(resolve_env_path())  # {} when the file is missing
     level = os.environ.get("LOG_LEVEL") or file_values.get("LOG_LEVEL")
     log_format = os.environ.get("LOG_FORMAT") or file_values.get("LOG_FORMAT")
     return level, log_format

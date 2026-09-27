@@ -12,8 +12,32 @@ from pydantic import BaseModel, Field, ValidationError
 # Valid database alias pattern: letters, digits, underscore; must start with letter; max 64 chars
 _ALIAS_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
-# Repository-root .env (works for editable installs)
-DEFAULT_ENV_PATH = Path(__file__).parent.parent.parent / ".env"
+# Environment variable naming the .env file explicitly.
+ENV_FILE_VAR = "MCP_SQL_SERVER_ENV_FILE"
+
+# Repository-root .env. Only exists for an editable checkout: under a normal
+# `pip install .` this resolves into site-packages, which is why it is the
+# last resort rather than the only answer.
+_PACKAGE_ENV_PATH = Path(__file__).parent.parent.parent / ".env"
+
+
+def resolve_env_path(explicit: Path | None = None) -> Path:
+    """Locate the .env file: explicit argument, $MCP_SQL_SERVER_ENV_FILE, ./.env, package root.
+
+    The working directory is checked, but its parents are not. python-dotenv's
+    find_dotenv climbs ancestors; under an MCP client that would let an
+    unrelated parent directory's .env supply database credentials without
+    anyone choosing it. One predictable location beats a search.
+    """
+    if explicit is not None:
+        return explicit
+    override = os.environ.get(ENV_FILE_VAR)
+    if override:
+        return Path(override)
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.is_file():
+        return cwd_env
+    return _PACKAGE_ENV_PATH
 
 
 def _parse_int(raw: str, name: str) -> int:
@@ -38,7 +62,7 @@ def _read_dotenv(env_path: Path | None) -> dict[str, str]:
     Loading .env into os.environ would make file values indistinguishable
     from explicitly set ones and break the documented precedence.
     """
-    values = dotenv_values(env_path or DEFAULT_ENV_PATH)
+    values = dotenv_values(resolve_env_path(env_path))
     return {k: v for k, v in values.items() if v is not None}
 
 
@@ -308,7 +332,7 @@ def get_query_dir() -> Path:
     Returns:
         Path to the query directory.
     """
-    query_dir_str = _env("QUERY_DIR", _read_dotenv(DEFAULT_ENV_PATH))
+    query_dir_str = _env("QUERY_DIR", _read_dotenv(None))
     if query_dir_str:
         return Path(query_dir_str).resolve()
 

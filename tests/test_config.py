@@ -447,13 +447,15 @@ class TestDatabaseConfigValidation:
 
 from unittest.mock import patch as _patch  # noqa: E402
 
+import mcp_sql_server.config as config_module  # noqa: E402
 from mcp_sql_server.config import (  # noqa: E402
-    DEFAULT_ENV_PATH,
+    ENV_FILE_VAR,
     DatabaseConfig as _DatabaseConfig,
     PoolConfig as _PoolConfig,
     describe_config_error,
     load_database_config,
     load_pool_config,
+    resolve_env_path,
 )
 
 
@@ -523,9 +525,6 @@ class TestPerAliasLoaders:
         with _patch.dict("os.environ", {"DB_X_POOL_MAX_SIZE": "7"}, clear=True):
             assert load_pool_config("x", tmp_path / "none.env").max_size == 7
 
-    def test_default_env_path_is_repo_root(self):
-        assert DEFAULT_ENV_PATH.name == ".env"
-        assert (DEFAULT_ENV_PATH.parent / "pyproject.toml").exists()
 
 
 class TestDotenvNeverMutatesEnviron:
@@ -594,3 +593,71 @@ class TestDotenvNeverMutatesEnviron:
         env_file.write_text(self.ENV_FILE + "SQL_SERVER_HOST=file-sql-server\n")
         with patch.dict(os.environ, {}, clear=True):
             assert DatabaseConfig.from_env(env_path=env_file).host == "file-sql-server"
+
+
+class TestEnvPathResolution:
+    """Where the .env file is looked for.
+
+    The package-relative path only exists for an editable checkout, so under a
+    normal `pip install .` the .env feature was unreachable. Resolution order
+    is now: explicit argument, then MCP_SQL_SERVER_ENV_FILE, then ./.env, then
+    the package-relative fallback.
+    """
+
+    def test_explicit_argument_wins_over_override_var(self, tmp_path, monkeypatch):
+        explicit = tmp_path / "explicit.env"
+        monkeypatch.setenv(ENV_FILE_VAR, str(tmp_path / "override.env"))
+        assert resolve_env_path(explicit) == explicit
+
+    def test_override_var_wins_over_cwd(self, tmp_path, monkeypatch):
+        cwd = tmp_path / "work"
+        cwd.mkdir()
+        (cwd / ".env").write_text("DB_HOST=from-cwd\n")
+        override = tmp_path / "override.env"
+        override.write_text("DB_HOST=from-override\n")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv(ENV_FILE_VAR, str(override))
+        assert resolve_env_path() == override
+
+    def test_cwd_env_is_found(self, tmp_path, monkeypatch):
+        """The case a normal install needs: .env beside the working directory."""
+        monkeypatch.delenv(ENV_FILE_VAR, raising=False)
+        (tmp_path / ".env").write_text("DB_HOST=from-cwd\n")
+        monkeypatch.chdir(tmp_path)
+        assert resolve_env_path() == tmp_path / ".env"
+
+    def test_cwd_directory_named_dotenv_is_ignored(self, tmp_path, monkeypatch):
+        """A directory called .env is not a config file; fall through to the package."""
+        monkeypatch.delenv(ENV_FILE_VAR, raising=False)
+        (tmp_path / ".env").mkdir()
+        monkeypatch.chdir(tmp_path)
+        assert resolve_env_path() == config_module._PACKAGE_ENV_PATH
+
+    def test_falls_back_to_package_path(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(ENV_FILE_VAR, raising=False)
+        monkeypatch.chdir(tmp_path)  # no .env here
+        assert resolve_env_path() == config_module._PACKAGE_ENV_PATH
+
+    def test_values_load_from_cwd_env_under_a_non_editable_layout(self, tmp_path, monkeypatch):
+        """End-to-end: no repo checkout in sight, and the .env is still read."""
+        monkeypatch.delenv(ENV_FILE_VAR, raising=False)
+        monkeypatch.setattr(
+            config_module, "_PACKAGE_ENV_PATH", tmp_path / "site-packages" / ".env"
+        )
+        (tmp_path / ".env").write_text(
+            "DB_HOST=cwd-host\nDB_USER=u\nDB_PASSWORD=p\nDB_NAME=d\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        with _patch.dict(os.environ, {}, clear=True):
+            assert _DatabaseConfig.from_env().host == "cwd-host"
+
+    def test_process_env_still_beats_the_cwd_file(self, tmp_path, monkeypatch):
+        """Changing WHICH file is read must not change the precedence order."""
+        monkeypatch.delenv(ENV_FILE_VAR, raising=False)
+        (tmp_path / ".env").write_text(
+            "DB_HOST=cwd-host\nDB_USER=u\nDB_PASSWORD=p\nDB_NAME=d\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        env = {"DB_HOST": "process-host", "DB_USER": "u", "DB_PASSWORD": "p", "DB_NAME": "d"}
+        with _patch.dict(os.environ, env, clear=True):
+            assert _DatabaseConfig.from_env().host == "process-host"
