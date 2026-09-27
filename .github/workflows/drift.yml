@@ -47,8 +47,9 @@ jobs:
 
       # Steps above resolve within mcp<3 and pydantic<3, so they can never
       # meet a new major — the exact event that caused the outage. This step
-      # deliberately breaches the ceilings. Advisory: it goes red without
-      # failing the job.
+      # deliberately breaches the ceilings. Advisory only: continue-on-error
+      # marks this step with an orange warning and leaves the job's conclusion
+      # success, so it will not show up as a red run — read the step itself.
       - name: Probe above the declared ceilings
         continue-on-error: true
         run: |

@@ -11,7 +11,7 @@ patch utils._db_getter directly. See the plan for detail.
 """
 
 import json
-from typing import Any
+from typing import Any, Iterator
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,7 +22,7 @@ from mcp_sql_server.cache import invalidate_metadata_cache
 
 
 @pytest.fixture
-def dispatch_db(mock_db_manager: Any, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+def dispatch_db(mock_db_manager: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
     """Route every utils.get_db(...) call to the mocked DatabaseManager.
 
     Patches the cached getter itself, not server.get_db, because
@@ -35,12 +35,15 @@ def dispatch_db(mock_db_manager: Any, monkeypatch: pytest.MonkeyPatch) -> MagicM
         return mock_db_manager
 
     monkeypatch.setattr(utils_module, "_db_getter", _getter)
+    monkeypatch.setattr(utils_module, "_registry_getter", None)
     monkeypatch.setattr(server, "_registry", None)
     # list_tables/describe_table/list_procedures are @cached in a module-global
-    # TTLCache that nothing resets between tests, so another test's rows would
-    # be served instead of this fixture's.
+    # TTLCache that nothing resets between tests. Clearing on entry stops another
+    # test's rows reaching this one; clearing on exit stops this one's rows
+    # reaching whatever runs next.
     invalidate_metadata_cache()
-    return calls
+    yield calls
+    invalidate_metadata_cache()
 
 
 def _payload(result: Any) -> dict[str, Any]:
@@ -58,11 +61,8 @@ async def test_execute_query_dispatches(dispatch_db):
 TOOL_CALLS: list[tuple[str, dict[str, Any]]] = [
     ("execute_query", {"sql": "SELECT 1"}),
     ("execute_statement", {"sql": "UPDATE t SET c = 1"}),
-    ("execute_query_file", {"filename": "example.sql"}),
     ("list_tables", {}),
     ("describe_table", {"table_name": "Users"}),
-    ("get_view_definition", {"view_name": "vwUsers"}),
-    ("get_function_definition", {"function_name": "fnUsers"}),
     ("list_procedures", {}),
     ("execute_procedure", {"proc_name": "spUsers"}),
     ("list_databases", {}),
@@ -75,30 +75,80 @@ async def test_every_tool_dispatches(dispatch_db, name, args):
     result = await server.mcp.call_tool(name, args)
     assert result.is_error is False, f"{name} reported is_error"
     body = _payload(result)
-    assert "success" in body, f"{name} returned no success key: {body}"
+    assert body.get("success") is True, f"{name} did not succeed: {body}"
+
+
+# The three tools below cannot succeed against the generic mock cursor: two need a
+# row carrying a `definition`, and one needs a real file on disk. Parametrising them
+# with the rest would only assert that a failure dict round-trips.
+
+
+@pytest.fixture
+def definition_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
+    """A db whose execute_query returns a row with a non-empty definition."""
+    db = MagicMock()
+    db.execute_query.return_value = [{"definition": "CREATE VIEW vwUsers AS SELECT 1"}]
+    monkeypatch.setattr(utils_module, "_db_getter", lambda database="default": db)
+    monkeypatch.setattr(utils_module, "_registry_getter", None)
+    monkeypatch.setattr(server, "_registry", None)
+    invalidate_metadata_cache()
+    yield db
+    invalidate_metadata_cache()
+
+
+async def test_get_view_definition_dispatches(definition_db):
+    result = await server.mcp.call_tool("get_view_definition", {"view_name": "vwUsers"})
+    assert result.is_error is False
+    body = _payload(result)
+    assert body["success"] is True, body
+    assert "CREATE VIEW" in body["definition"]
+
+
+async def test_get_function_definition_dispatches(definition_db):
+    result = await server.mcp.call_tool("get_function_definition", {"function_name": "fnUsers"})
+    assert result.is_error is False
+    body = _payload(result)
+    assert body["success"] is True, body
+
+
+async def test_execute_query_file_dispatches(dispatch_db, query_dir, monkeypatch):
+    """Runs a real .sql file, so the tool resolves a path instead of reporting not-found."""
+    from mcp_sql_server.config import get_query_dir
+
+    monkeypatch.setenv("QUERY_DIR", str(query_dir))
+    get_query_dir.cache_clear()
+    try:
+        result = await server.mcp.call_tool("execute_query_file", {"filename": "select_users.sql"})
+    finally:
+        get_query_dir.cache_clear()
+    assert result.is_error is False
+    body = _payload(result)
+    assert body["success"] is True, body
 
 
 async def test_wrong_typed_argument_is_rejected(dispatch_db):
     """A non-integer limit is rejected by schema validation, not the handler."""
     from mcp.server.mcpserver.exceptions import ToolError
 
-    with pytest.raises(ToolError):
+    with pytest.raises(ToolError, match="valid integer"):
         await server.mcp.call_tool("execute_query", {"sql": "SELECT 1", "limit": "abc"})
+    dispatch_db.assert_not_called()
 
 
 async def test_missing_required_argument_is_rejected(dispatch_db):
     """execute_query without sql never reaches the handler."""
     from mcp.server.mcpserver.exceptions import ToolError
 
-    with pytest.raises(ToolError):
+    with pytest.raises(ToolError, match="Field required"):
         await server.mcp.call_tool("execute_query", {})
+    dispatch_db.assert_not_called()
 
 
 async def test_unknown_tool_raises(dispatch_db):
     """An unknown tool name is the one case that surfaces through dispatch."""
     from mcp.server.mcpserver.exceptions import ToolError
 
-    with pytest.raises(ToolError):
+    with pytest.raises(ToolError, match="Unknown tool"):
         await server.mcp.call_tool("no_such_tool", {})
 
 
@@ -125,12 +175,12 @@ async def test_unknown_alias_is_not_a_dispatch_error(monkeypatch):
     assert _payload(result)["success"] is False
 
 
-RESOURCE_URIS = [
-    "sqlserver://tables",
-    "sqlserver://database/info",
-    "sqlserver://functions",
-    "sqlserver://pool/stats",
-    "sqlserver://databases",
+RESOURCE_EXPECTATIONS = [
+    ("sqlserver://tables", "Users"),
+    ("sqlserver://database/info", "TestDb"),
+    ("sqlserver://functions", "Users"),
+    ("sqlserver://pool/stats", "Total Connections Created"),
+    ("sqlserver://databases", "| default | testhost | 1433 | TestDb | ok |"),
 ]
 
 
@@ -149,30 +199,63 @@ RESOURCE_ROW = {
 }
 
 
-@pytest.fixture
-def resource_db(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """A db whose execute_query returns rows every resource can render.
+# resource_pool_stats reads db.pool_stats and renders only the keys it knows.
+# A MagicMock attribute is not None, so it takes the table path and emits an
+# empty table — which passes a "not an error" assertion while showing nothing.
+POOL_STATS = {
+    "total_connections": 3,
+    "pool_size": 5,
+    "in_use": 1,
+    "available": 2,
+    "peak_usage": 4,
+}
 
-    The generic mock_cursor returns (id, name, value) rows, which make the
-    schema-reading resources raise or emit an error string — passing a
-    "returns a string" assertion while proving nothing.
+
+@pytest.fixture
+def resource_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
+    """A db and registry from which every resource can render real content.
+
+    Three things are needed, and each was found by watching a resource render
+    nothing while still passing a weaker assertion:
+      - execute_query rows carrying every key the handlers read (RESOURCE_ROW),
+      - a real pool_stats dict, not a MagicMock attribute,
+      - valid DB_* values, because the autouse isolation fixture strips them and
+        the registry then reports `default` as misconfigured.
     """
+    for key, value in {
+        "DB_HOST": "testhost",
+        "DB_PORT": "1433",
+        "DB_USER": "tester",
+        "DB_PASSWORD": "secret",
+        "DB_NAME": "TestDb",
+    }.items():
+        monkeypatch.setenv(key, value)
+
     db = MagicMock()
     db.execute_query.return_value = [RESOURCE_ROW]
+    db.pool_stats = POOL_STATS
     monkeypatch.setattr(utils_module, "_db_getter", lambda database="default": db)
+    monkeypatch.setattr(utils_module, "_registry_getter", None)
     monkeypatch.setattr(server, "_registry", None)
     invalidate_metadata_cache()
-    return db
+    yield db
+    invalidate_metadata_cache()
 
 
-@pytest.mark.parametrize("uri", RESOURCE_URIS)
-async def test_every_resource_dispatches(resource_db, uri):
-    """Each resource renders real content through dispatch, not an error."""
+@pytest.mark.parametrize("uri,expected", RESOURCE_EXPECTATIONS, ids=[u for u, _ in RESOURCE_EXPECTATIONS])
+async def test_every_resource_dispatches(resource_db, uri, expected):
+    """Each resource renders real content through dispatch, not an error.
+
+    Each case asserts a substring only present when the resource actually
+    rendered data. "Does not start with Error" is not enough: pool/stats and
+    databases both satisfy it while emitting an empty table.
+    """
     contents = list(await server.mcp.read_resource(uri))
     assert contents, f"{uri} returned nothing"
     body = contents[0].content
     assert isinstance(body, str)
     assert not body.startswith("Error"), f"{uri} reported an error: {body[:200]}"
+    assert expected in body, f"{uri} rendered no data (missing {expected!r}): {body[:300]}"
 
 
 async def test_unknown_resource_uri_raises(resource_db):
