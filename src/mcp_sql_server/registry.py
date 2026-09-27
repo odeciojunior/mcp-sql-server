@@ -2,8 +2,11 @@
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+import pyodbc
 
 from .config import (
     DatabaseConfig,
@@ -14,8 +17,18 @@ from .config import (
     load_pool_config,
 )
 from .database import DatabaseManager
+from .errors import sanitize_error
 
 logger = logging.getLogger(__name__)
+
+# Probe connections are health checks, not work: they must fail fast rather
+# than inherit DB_TIMEOUT (30s by default), which would make a listing of
+# several offline databases take minutes.
+DEFAULT_PROBE_TIMEOUT = 5.0
+
+# Probes are independent and almost entirely I/O wait, so they run together.
+# Capped because a registry could hold many aliases.
+_MAX_PROBE_WORKERS = 8
 
 
 class DatabaseRegistry:
@@ -100,15 +113,79 @@ class DatabaseRegistry:
         """Return all configured alias names, including misconfigured ones."""
         return [*self._configs, *(n for n in self._config_errors if n not in self._configs)]
 
-    def get_database_info(self) -> list[dict[str, Any]]:
-        """Return connection info for all databases (no passwords).
+    def probe(
+        self, name: str, timeout: float = DEFAULT_PROBE_TIMEOUT
+    ) -> tuple[str, str | None]:
+        """Open one connection to `name` and run SELECT 1.
+
+        Deliberately not routed through get(): that lazily builds a
+        DatabaseManager and a pool of min_size connections, which is far too
+        heavy for a health check and would leave a broken pool cached for a
+        database that is down.
+
+        Args:
+            name: Database alias to probe.
+            timeout: Seconds to wait for the connection.
 
         Returns:
-            One dict per alias. Valid: name, host, port, database, status "ok".
-            Misconfigured: name, status "misconfigured", error.
+            ("ok", None) if a query succeeded, else ("unreachable", message).
+            The message is sanitised: it never contains credentials.
+
+        Raises:
+            KeyError: If name is not a configured database.
         """
+        if name not in self._configs:
+            raise KeyError(f"Unknown database '{name}'")
+        config = self._configs[name]
+        conn = None
+        try:
+            conn = pyodbc.connect(config.get_connection_string(), timeout=int(timeout))
+            # Opening a connection is not enough: a database can accept the
+            # login and still refuse to serve queries.
+            conn.cursor().execute("SELECT 1")
+            return "ok", None
+        except Exception as e:
+            return "unreachable", sanitize_error(e)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.debug("Error closing probe connection for '%s'", name)
+
+    def get_database_info(
+        self, probe: bool = False, timeout: float = DEFAULT_PROBE_TIMEOUT
+    ) -> list[dict[str, Any]]:
+        """Return connection info for all databases (no passwords).
+
+        Args:
+            probe: Open a real connection per alias to determine status.
+                   Without it no reachability claim is made.
+            timeout: Per-probe connection timeout in seconds.
+
+        Returns:
+            One dict per alias. Configured: name, host, port, database, and
+            status "ok" / "unreachable" (with error) when probed, else
+            "unknown". Misconfigured: name, status "misconfigured", error.
+
+        Status never asserts reachability that was not measured -- reporting
+        "ok" for a database that merely parsed is how an OFFLINE database
+        came back healthy.
+        """
+        names = self.list_databases()
+        probeable = [n for n in names if n not in self._config_errors]
+
+        results: dict[str, tuple[str, str | None]] = {}
+        if probe and probeable:
+            workers = min(len(probeable), _MAX_PROBE_WORKERS)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for name, result in zip(
+                    probeable, pool.map(lambda n: self.probe(n, timeout), probeable)
+                ):
+                    results[name] = result
+
         databases: list[dict[str, Any]] = []
-        for name in self.list_databases():
+        for name in names:
             if name in self._config_errors:
                 databases.append({
                     "name": name,
@@ -117,13 +194,17 @@ class DatabaseRegistry:
                 })
                 continue
             config = self._configs[name]
-            databases.append({
+            status, error = results.get(name, ("unknown", None))
+            entry: dict[str, Any] = {
                 "name": name,
                 "host": config.host,
                 "port": config.port,
                 "database": config.database,
-                "status": "ok",
-            })
+                "status": status,
+            }
+            if error:
+                entry["error"] = error
+            databases.append(entry)
         return databases
 
     def close(self) -> None:

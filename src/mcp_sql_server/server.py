@@ -288,14 +288,20 @@ def _execute_procedure(
 
 @mcp.tool(name="list_databases")
 @with_request_id
-def _list_databases() -> dict[str, Any]:
+def _list_databases(probe: bool = True) -> dict[str, Any]:
     """
-    List all configured database connections.
+    List all configured database connections and whether each is reachable.
+
+    Args:
+        probe: Open a real connection per database to check reachability
+               (default). Set False for a fast config-only listing, which
+               reports status "unknown" instead of assuming "ok".
 
     Returns:
-        Dictionary with configured database names and their connection info
+        Dictionary with configured database names, their connection info, and
+        a status of "ok", "unreachable", "misconfigured", or "unknown"
     """
-    return list_databases()
+    return list_databases(probe=probe)
 
 
 # Register resources

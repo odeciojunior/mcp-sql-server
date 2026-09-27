@@ -202,12 +202,21 @@ def resource_databases() -> str:
             "| Name | Host | Port | Database | Status |",
             "|------|------|------|----------|--------|",
         ]
+        # Renders each alias's own status. This used to print the literal "ok"
+        # for every configured alias, which reported OFFLINE databases as
+        # healthy. The resource does not probe -- resources are read
+        # speculatively and must not open connections as a side effect -- so
+        # the honest value here is "unknown". Call the list_databases tool for
+        # a measured answer.
         for db in databases:
-            if db.get("status") == "misconfigured":
+            status = db.get("status", "unknown")
+            if status == "misconfigured":
                 lines.append(f"| {db['name']} | - | - | - | misconfigured: {db['error']} |")
             else:
+                if db.get("error"):
+                    status = f"{status}: {db['error']}"
                 lines.append(
-                    f"| {db['name']} | {db['host']} | {db['port']} | {db['database']} | ok |"
+                    f"| {db['name']} | {db['host']} | {db['port']} | {db['database']} | {status} |"
                 )
 
         return "\n".join(lines)
