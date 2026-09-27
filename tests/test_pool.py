@@ -606,3 +606,57 @@ class TestCreationFailure:
                 pool = ConnectionPool(db_config, cfg)
             assert "bob" not in caplog.text
             pool.close()
+
+
+class TestPoolCleanupBranches:
+    """Cleanup paths in acquire() and release() that nothing else exercises."""
+
+    def test_acquire_retires_idle_connection(self, db_config, pool_config):
+        """A connection idle past idle_timeout is closed, not handed out."""
+        import time
+
+        with patch("pyodbc.connect", side_effect=lambda *a, **kw: MagicMock()):
+            pool = ConnectionPool(db_config, PoolConfig(min_size=1, max_size=2, idle_timeout=1))
+            stale = pool.acquire()
+            stale.last_used_at = time.time() - 3600
+            pool.release(stale)
+
+            fresh = pool.acquire()
+            assert fresh is not stale, "idle connection was handed out instead of retired"
+            pool.release(fresh)
+            pool.close()
+
+    def test_release_into_closed_pool_closes_connection(self, db_config, pool_config):
+        """Releasing after close() closes the connection instead of pooling it."""
+        with patch("pyodbc.connect", side_effect=lambda *a, **kw: MagicMock()):
+            pool = ConnectionPool(db_config, pool_config)
+            conn = pool.acquire()
+            pool.close()
+            pool.release(conn)
+            conn.connection.close.assert_called()
+
+    def test_release_retires_stale_connection(self, db_config):
+        """A connection past max_lifetime is closed on release, not pooled."""
+        import time
+
+        with patch("pyodbc.connect", side_effect=lambda *a, **kw: MagicMock()):
+            pool = ConnectionPool(db_config, PoolConfig(min_size=1, max_size=2, max_lifetime=1))
+            conn = pool.acquire()
+            conn.created_at = time.time() - 3600
+            pool.release(conn)
+            conn.connection.close.assert_called()
+            pool.close()
+
+    def test_release_into_full_pool_closes_connection(self, db_config):
+        """queue.Full on release closes the surplus connection rather than leaking it."""
+        with patch("pyodbc.connect", side_effect=lambda *a, **kw: MagicMock()):
+            pool = ConnectionPool(db_config, PoolConfig(min_size=1, max_size=2))
+            conn = pool.acquire()
+            # Fill the queue to capacity behind the pool's back so put_nowait
+            # raises. Built directly rather than via _create_connection(),
+            # which refuses once created_count has reached max_size.
+            while not pool._pool.full():
+                pool._pool.put_nowait(PooledConnection(connection=MagicMock()))
+            pool.release(conn)
+            conn.connection.close.assert_called()
+            pool.close()
