@@ -50,7 +50,12 @@ jobs:
       # deliberately breaches the ceilings. Advisory only: continue-on-error
       # marks this step with an orange warning and leaves the job's conclusion
       # success, so it will not show up as a red run — read the step itself.
+      # if: always() because this is the only step that serves the goal the
+      # workflow exists for. Without it a failing suite skips the probe, so the
+      # run says nothing about a new major precisely when something is already
+      # wrong — which is when you most want to know.
       - name: Probe above the declared ceilings
+        if: always()
         continue-on-error: true
         run: |
           pip install --no-cache-dir --upgrade mcp pydantic
