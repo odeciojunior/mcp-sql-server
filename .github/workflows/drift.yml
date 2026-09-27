@@ -1,0 +1,57 @@
+name: Dependency drift
+
+# Resolves dependencies fresh, rather than against whatever is already
+# installed. The 2026-09-23 outage was caused by upstream moving while the
+# repository sat still, so no push-triggered run could have caught it.
+on:
+  schedule:
+    # Monday 06:23 UTC. Deliberately off the hour: GitHub delays or drops
+    # scheduled jobs during the high load at the start of every hour.
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drift
+  cancel-in-progress: false
+
+jobs:
+  fresh-resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install unixODBC
+        run: sudo apt-get update && sudo apt-get install -y unixodbc
+
+      - name: Install from a clean resolution
+        run: pip install --no-cache-dir .
+
+      - name: Import canary
+        run: python -c "import mcp_sql_server.server"
+
+      # Runs even if the canary failed: knowing WHICH dependency moved is
+      # the whole diagnostic value of this job.
+      - name: Resolved versions
+        if: always()
+        run: pip freeze
+
+      - name: Install dev extras and run the suite
+        run: |
+          pip install --no-cache-dir ".[dev]"
+          pytest tests/ -q
+
+      # Steps above resolve within mcp<3 and pydantic<3, so they can never
+      # meet a new major — the exact event that caused the outage. This step
+      # deliberately breaches the ceilings. Advisory: it goes red without
+      # failing the job.
+      - name: Probe above the declared ceilings
+        continue-on-error: true
+        run: |
+          pip install --no-cache-dir --upgrade mcp pydantic
+          pip freeze | grep -E '^(mcp|pydantic)=='
+          python -c "import mcp_sql_server.server"

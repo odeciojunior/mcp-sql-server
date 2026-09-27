@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Opens a PR when a dependency publishes a new version, including a major
+  # beyond the declared ceilings, which ci.yml then adjudicates. The PR
+  # traffic also counts as repository activity, which keeps GitHub from
+  # auto-disabling the scheduled drift workflow after 60 days of quiet.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:23"
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:23"
