@@ -208,7 +208,7 @@ Key test files:
 
 Conventions:
 - Never let a test open a real DB connection — the local `.env` can target production; fixtures mock `pyodbc.connect` (`mock_pyodbc`, `mock_connection`, `mock_cursor`, `sample_config`).
-- `tests/conftest.py` autouse fixture points `DEFAULT_ENV_PATH` at a missing file and strips `DB_*`/`SQL_SERVER_*`; tests must never read the real `.env`.
+- `tests/conftest.py` autouse fixture points `$MCP_SQL_SERVER_ENV_FILE` at a missing file, repoints `_PACKAGE_ENV_PATH`, and strips `DB_*`/`SQL_SERVER_*`; tests must never read the real `.env`.
 - Tool-layer tests patch the tool module's alias (`patch.object(query_execution, "_get_db")`), not `utils.get_db`.
 - `test_concurrency.py` uses `_run_concurrently(target, workers=...)` for real-thread tests (mcp 2.x runs sync handlers in threads).
 - `test_logging_config.py` restores the root logger via an autouse fixture; logging tests must not leak handlers.
@@ -219,6 +219,12 @@ Conventions:
 - `query/` - SQL files for `execute_query_file` (not checked in; create as needed)
 - `.claude/rules/*.md` - auto-loaded rules (SQL conventions, connection setup, tool reference); `.claude/agents/` - SQL Server specialist subagents
 - `README.md` - full user-facing documentation; keep it in sync with behavior changes
+
+## CI
+
+- `ci.yml` — push to `main`, PRs, manual; matrix Python 3.10 and 3.14; installs `unixodbc`, runs the suite.
+- `drift.yml` — Mondays 06:23 UTC + manual; resolves dependencies fresh and probes above the `<3` ceilings, the only check that can meet a new upstream major.
+- Dependabot raises floors weekly (pip + github-actions); it never widens the ceilings.
 
 ## Git Workflow
 
