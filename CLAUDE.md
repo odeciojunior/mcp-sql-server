@@ -96,11 +96,14 @@ Cross-Cutting: config.py, security.py, cache.py, audit.py, errors.py, logging_co
 
 All tools accept optional `database` parameter (default: `"default"`) for multi-database support.
 
+`list_databases` takes `probe` instead (default `true`): it opens a real connection per database. `status` is `ok`/`unreachable`/`misconfigured`/`unknown` and never claims reachability it did not measure.
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your values. Required: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` (or `SQL_SERVER_*` via `.claude/settings.local.json`).
 
 - Default-DB precedence: process `DB_*` > `SQL_SERVER_*` > `.env` `DB_*`; named aliases read only `DB_{ALIAS}_*`.
+- `.env` location: explicit arg > `$MCP_SQL_SERVER_ENV_FILE` > `./.env` (cwd only, never parents) > package-relative, which exists only for an editable install.
 - `.env` is read with `dotenv_values` and must never be merged into `os.environ` (`load_dotenv`) — that silently breaks precedence.
 - The local `.env` may define aliases on production hosts: before any live check, print the resolved host (`load_database_config("default").host`, no connection) and only query the `default` alias.
 
@@ -168,6 +171,10 @@ Validation tokenizes SQL (`sql_lexer.py`); strings, quoted identifiers, and comm
 
 ### Gotchas
 
+- Ambient `SQL_SERVER_*`/`DB_*` from the shell outrank `.env` file values — run config checks under `env -i` or they verify the process env while appearing to test the file.
+- `tests/conftest.py` neutralises every `.env` resolution branch (points `MCP_SQL_SERVER_ENV_FILE` at a nonexistent file); a new branch must be neutralised there too or the suite reads the real `.env`.
+- `.venv` may be the runtime for a registered MCP server; a bare `pip install --force-reinstall` can break a running setup — force only the package, with `--no-deps`.
+
 - Validator changes must fail closed: SQL Server ends `--` comments at a bare `\r`, reads `1e` as a float, and lexes `1e--x` as `1e-` then `-x` (verified live).
 - `execute_query` limits rows with session `SET ROWCOUNT` + `fetchmany`, then resets and checks `DB_NAME()`; never parameterize the `SET` (it reverts inside `sp_executesql`).
 - `execute_procedure` runs on the read path and never commits — procedure writes are rolled back (documented, pinned by a test).
@@ -177,6 +184,8 @@ Validation tokenizes SQL (`sql_lexer.py`); strings, quoted identifiers, and comm
 ## Testing
 
 Comprehensive suite with 95%+ coverage (see the coverage command above). Tests use mocked database connections (no live DB required).
+
+`drift.yml` installs non-editable (`pip install .`): assertions that assume a repo checkout beside the package fail there, correctly.
 
 Key test files:
 - `test_server.py` - Tool and resource integration tests
