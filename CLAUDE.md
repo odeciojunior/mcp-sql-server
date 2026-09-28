@@ -232,4 +232,4 @@ Conventional commits with scopes (`fix(server): ...`, `feat(security): ...`, `do
 
 ## Type Safety
 
-Full mypy strict mode compliance. Run `mypy src/mcp_sql_server/` to verify.
+Full mypy strict mode compliance. Verify with `.venv/bin/python -m mypy src/mcp_sql_server/` — a system-wide `mypy` is a different version that cannot see the venv's typed `mcp` package and reports false errors.
